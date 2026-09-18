@@ -1,0 +1,396 @@
+# Phage Sentinel
+
+### Autonomous On-Chain Immune System & Threat Quarantine Protocol for the Agentic Economy
+
+```
+Protocol:        Phage Sentinel
+Runtime:         GenLayer GenVM (Intelligent Contracts, Python)
+Network:         GenLayer Studio-dev
+Chain ID:        61997
+RPC:             https://studio-dev.genlayer.com/api
+Explorer:        https://explorer-studio-dev.genlayer.com
+Contract:        0x07A8d9e769019ccB49Ad2f8CE4e873ad7904D186
+Pinned Runner:   py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng
+Verification:    Deployed & verified on-chain (Studio-dev); local 42-test suite needs the v0.3.0 gltest toolchain
+License:         MIT
+```
+
+---
+
+## Table of Contents
+
+1. [Overview & Vision](#1-overview--vision)
+2. [The Problem](#2-the-problem)
+3. [Architecture & Economics](#3-architecture--economics)
+4. [Threat Lifecycle](#4-threat-lifecycle)
+5. [Smart Contract Methods](#5-smart-contract-methods)
+6. [The Non-Deterministic Consensus Engine](#6-the-non-deterministic-consensus-engine)
+7. [Security & Audit Verification](#7-security--audit-verification)
+8. [Setup, Testing & Deployment](#8-setup-testing--deployment)
+9. [Frontend dApp](#9-frontend-dapp)
+10. [Repository Layout](#10-repository-layout)
+11. [Disclaimer & License](#11-disclaimer--license)
+
+---
+
+## 1. Overview & Vision
+
+**Phage Sentinel** is an autonomous, on-chain **immune system** for the agentic economy, built natively on **GenLayer's GenVM**. As AI agents take direct custody of treasuries, trade on decentralized exchanges, and exchange unstructured messages with one another, the dominant attack surface shifts from deterministic bytecode bugs (reentrancy, overflow) to **semantic exploits**: indirect prompt injection, tool hijacking, jailbreaks, and adversarial telemetry. Deterministic EVM contracts cannot reason about unstructured forensic evidence; human multisig response times guarantee a drained treasury long before a manual reaction.
+
+Phage closes that gap by turning threat response into a permissionless, economically-bonded protocol. Inspired by the bacteriophage — a virus that hunts and neutralizes specific bacterial hosts — the protocol implements four cooperating primitives:
+
+- **Bonded pathogen reports.** Anyone can report a suspicious agent, but only by escrowing a bond. This makes spam and griefing expensive.
+- **A decentralized, non-deterministic multi-LLM consensus tribunal.** Validators independently fetch authoritative telemetry and classify the incident. The verdict is an indivisible categorical **tier**, never a fuzzy score.
+- **Tiered quarantine & bounty payouts.** Confirmed threats are quarantined for a tier-bound duration; genuine critical findings earn a scaled bounty and mint a reusable **antibody** signature.
+- **An anti-griefing appeal lifecycle.** A wrongly-quarantined agent can appeal; an upheld appeal lifts the quarantine, revokes the antibody, slashes the malicious reporter, and permanently escalates the bond required to report that target again.
+
+The result is a **fail-closed, self-funding, adversarially-hardened** defense layer that other contracts can consult on-chain via `is_quarantined(agent)`.
+
+---
+
+## 2. The Problem
+
+| Attack Dimension | Classical EVM Exploit | Agentic Semantic Exploit |
+| :--- | :--- | :--- |
+| **Attack surface** | Bytecode logic, opcode order, arithmetic | Unstructured text, tool prompts, context windows |
+| **Payload delivery** | Calldata parameters | Natural-language RPC, feeds, GitHub PRs, webhooks |
+| **Execution vector** | EVM interpreter state transition | LLM parsing and autonomous tool invocation |
+| **Detection method** | Static analysis, symbolic execution | Multi-LLM semantic reasoning over forensic evidence |
+| **Impact** | Reentrancy drain, overflow | Rogue liquidation, key exfiltration, unauthorized trades |
+
+Phage exists because **detection of the second column requires reasoning that only a decentralized network of LLMs can perform deterministically enough for consensus** — which is exactly what GenLayer's GenVM provides.
+
+---
+
+## 3. Architecture & Economics
+
+### 3.1 System Components
+
+| Component | Storage | Responsibility |
+| :--- | :--- | :--- |
+| **Reports registry** | `reports`, `report_ids` | Every bonded pathogen report and its resolution |
+| **Quarantine registry** | `quarantines`, `quarantined_agents` | Active/expired quarantine state per agent |
+| **Antibody registry** | `antibodies`, `antibody_hashes` | Reusable signatures of confirmed critical pathogens |
+| **Appeals registry** | `appeals`, `appeal_ids` | Appeal records and their arbitration outcome |
+| **Replay guards** | `evaluated_digests`, `pending_digests` | Deterministic per-incident replay protection |
+| **Anti-griefing** | `defended_appeals` | Escalating reporter bond after each upheld appeal |
+| **Anti-farming** | `last_bounty_claimed_at` | Per-target bounty cooldown |
+| **Settlement** | `claimable_balances` | Pull-based, per-account claimable ledger |
+
+### 3.2 The Four-Bucket Balance Ledger
+
+Every atto (1 GEN = 10¹⁸ atto) that enters the contract lives in exactly one accounting bucket at rest:
+
+| Bucket | Field | Meaning |
+| :--- | :--- | :--- |
+| **Bounty pool** | `bounty_pool_atto` | Sponsor-funded rewards for confirmed critical findings |
+| **Protocol reserves** | `protocol_reserves_atto` | Slashed bonds (fabricated reports, rejected appeals) |
+| **Claimable balances** | `claimable_balances[addr]` | Funds owed to users, awaiting pull withdrawal |
+| **Total claimed** | `total_claimed_atto` | Cumulative value already withdrawn |
+
+Two categories of funds are held **in escrow** while a decision is pending and are not yet assigned to a resting bucket:
+
+- **Pending report bonds** — a reporter's bond between `report_pathogen` and its `evaluate_pathogen` / `reclaim_expired_report_bond`.
+- **In-flight appeal bonds** — settled atomically within `appeal_quarantine`, so they never persist across calls.
+
+`total_deposited_atto` tracks **all** native GEN ever received (funding + report bonds + appeal bonds).
+
+### 3.3 The Solvency Invariant
+
+At every point where no report is mid-evaluation, the ledger balances exactly:
+
+```
+total_deposited = bounty_pool + protocol_reserves + Σ(claimable_balances) + total_claimed + Σ(pending_report_bonds)
+```
+
+Informally, **`Balance = Pool + Reserves + Claimable + Bonds`**. Every state transition is designed to preserve this equality: a bond either moves from *pending* → *reserves* (slash), *pending* → *claimable* (refund), or a bounty moves *pool* → *claimable* (net-zero across buckets). This invariant is asserted directly by the test suite across multi-cycle scenarios — including the subtle case where a malicious reporter withdraws a leaked bounty *before* a successful appeal (the un-reclaimable value stays accounted for inside `total_claimed`).
+
+### 3.4 Checks-Effects-Interactions & Pull Withdrawals
+
+The contract never pushes value inside a state-mutating branch. Instead:
+
+1. **Checks** — validate inputs, bonds, replay guards, and state preconditions.
+2. **Effects** — mutate storage (zero the claimable balance, mark digests, update registries).
+3. **Interactions** — the *only* native-token movement is a user-initiated `withdraw()`, which zeroes the caller's claimable balance **before** emitting the transfer, and emits it with `on="finalized"` so an evaluation that is later appealed and slashed cannot leak value out of the contract.
+
+```python
+def withdraw(self) -> None:
+    amount = _get_claimable(self.claimable_balances, caller_hex)
+    if amount == 0:
+        raise gl.vm.UserError(f"{ERROR_EXPECTED} zero claimable balance")
+    # Effects before Interactions
+    self.claimable_balances[caller_hex] = u256(0)
+    self.total_claimed_atto = u256(int(self.total_claimed_atto) + amount)
+    # Interaction: native GEN pull, deferred to the finalized consensus decision
+    gl.get_contract_at(gl.message.sender_address).emit_transfer(
+        value=u256(amount), on="finalized"
+    )
+```
+
+### 3.5 Threat Tiers
+
+Classification is **indivisible and categorical** — there are no continuous floats in consensus-bound state.
+
+| Tier | Quarantine | Bounty (bps) | Reporter Bond | Antibody |
+| :--- | :--- | :--- | :--- | :--- |
+| `TIER_PATHOGEN_CRITICAL` | 7 days | 10000 (100%) | refunded | minted |
+| `TIER_SUSPICIOUS_ANOMALY` | 24 hours | 0 | refunded | — |
+| `TIER_BENIGN_NOISE` | none | 0 | refunded | — |
+| `TIER_FABRICATED_ATTACK` | none | 0 | **slashed 100%** | — |
+
+### 3.6 Economic Constants
+
+| Constant | Value | Purpose |
+| :--- | :--- | :--- |
+| `MIN_REPORTER_BOND` | 0.1 GEN | Base anti-spam bond to file a report |
+| `APPEAL_BOND` | 0.2 GEN | Mandatory bond to appeal a quarantine |
+| `BASE_BOUNTY_REWARD` | 1 GEN | Standard allocation for a critical finding |
+| `TARGET_BOUNTY_COOLDOWN_SEC` | 7 days | Per-target cooldown that caps repeat bounties to 0 |
+| `REPORT_EXPIRY_SEC` | 7 days | Liveness timeout after which a stale bond is reclaimable |
+| `MAX_PAGE_LIMIT` | 50 | Hard cap on paginated view queries (storage-DoS guard) |
+
+Bounty payouts are additionally scaled to `min(BASE_BOUNTY_REWARD, bounty_pool // 10)` so a single finding can never drain more than ~10% of the pool, and are `min`-clamped to the available pool to prevent underflow.
+
+---
+
+## 4. Threat Lifecycle
+
+```
+  fund_bounty_pool()                 (sponsor tops up the bounty pool)
+         │
+         ▼
+  report_pathogen(bond) ──────────► PENDING report + pending replay digest
+         │                                   │
+         │                                   │ (7-day liveness timeout, un-evaluated)
+         │                                   ▼
+         │                          reclaim_expired_report_bond() → bond back to reporter
+         ▼
+  evaluate_pathogen()  ── multi-LLM consensus ──► indivisible TIER
+         │
+         ├── FABRICATED  → bond slashed to reserves
+         ├── BENIGN      → bond refunded, no quarantine
+         ├── SUSPICIOUS  → bond refunded, 24h quarantine
+         └── CRITICAL    → bond refunded + scaled bounty, 7d quarantine, antibody minted
+                                   │
+                                   ▼
+                          appeal_quarantine(appeal_bond)
+                                   │
+                     ┌─────────────┴─────────────┐
+              UPHELD (BENIGN)              REJECTED (threat real / proof fake)
+              lift quarantine,             appeal bond slashed 100%
+              revoke antibody,             to reserves
+              slash original reporter,
+              escalate future bond
+                                   │
+                                   ▼
+                          recover_agent()  (after quarantine expiry)
+                                   │
+                                   ▼
+                          withdraw()  (pull settlement of claimable balance)
+```
+
+---
+
+## 5. Smart Contract Methods
+
+`contracts/phage_sentinel.py` exposes **22 entrypoints** (8 state-changing, 14 views).
+
+### 5.1 State-Changing Entrypoints
+
+| Method | Payable | Description |
+| :--- | :--- | :--- |
+| `fund_bounty_pool()` | ✅ | Deposit native GEN into the bounty pool. Rejects zero deposits. |
+| `report_pathogen(report_id, target_agent, platform, trace_id)` | ✅ | File a bonded report. Validates uniqueness, platform, trace format, replay guard, and escalated bond. |
+| `evaluate_pathogen(report_id)` | — | Run multi-LLM consensus, bind the tier, settle bond/bounty, enforce quarantine, mint antibody. |
+| `appeal_quarantine(target_agent, appeal_proof_trace_id, platform)` | ✅ | Appeal an active quarantine with a bond. Upheld → lift + revoke + slash reporter; rejected → slash appeal bond. |
+| `recover_agent(target_agent)` | — | Clear an expired quarantine flag once the cooldown has elapsed. |
+| `reclaim_expired_report_bond(report_id)` | — | Reporter-only reclaim of a bond for a report left un-evaluated past the 7-day liveness timeout. |
+| `withdraw()` | — | Pull the caller's entire claimable balance (CEI, `on="finalized"`). |
+| `withdraw_claimable()` | — | Idempotent alias of `withdraw()`. |
+
+> **Naming note:** the appeal entrypoint is `appeal_quarantine` (it operates on the target agent's active quarantine, not a single report id).
+
+### 5.2 View Entrypoints (read-only)
+
+| Method | Returns |
+| :--- | :--- |
+| `is_quarantined(target_agent)` | `bool` — the core cross-contract interop guard |
+| `get_quarantine_info(target_agent)` | Full quarantine record |
+| `get_antibody(signature_hash)` | Antibody signature record |
+| `get_report(report_id)` | Report record |
+| `get_appeal(appeal_id)` | Appeal record |
+| `get_claimable_balance(account)` | Claimable atto (string) |
+| `get_defended_appeals_count(target_agent)` | Successful-defense counter |
+| `get_required_reporter_bond(target_agent)` | Current (possibly escalated) bond |
+| `get_registry_overview()` | Global counters + the four ledger buckets |
+| `list_reports_paginated(offset, limit)` | Bounded page of reports |
+| `list_quarantined_agents_paginated(offset, limit)` | Bounded page of quarantines |
+| `list_antibodies_paginated(offset, limit)` | Bounded page of antibodies |
+| `list_quarantined_agents()` / `list_antibodies()` | Back-compat views capped at `MAX_PAGE_LIMIT` |
+
+### 5.3 Supported Telemetry Platforms
+
+`AGENT_RPC`, `TX_TRACE`, `SECURITY_FEED`, `GITHUB_AUDIT`. Callers submit only a **trace identifier**, never a full URL — the contract deterministically builds the authoritative provider URL from a whitelisted template, eliminating SSRF/URL-injection vectors.
+
+---
+
+## 6. The Non-Deterministic Consensus Engine
+
+Evaluation and appeal arbitration both run through GenLayer's leader/validator model via **`gl.vm.run_nondet`** — the *safe*, sandboxed variant that runs the validator in isolation and compares results with explicit error-equivalence handling (as opposed to the unsafe variant, which surfaces any validator error as a bare disagreement).
+
+1. **Leader function** fetches authoritative telemetry (`gl.nondet.web.get`), pre-quantizes it into a coarse threat indicator + anomaly score (to prevent boundary divergence between validators), and asks an LLM to return **strict JSON** with one of the four tiers.
+2. **Validator function** independently re-runs the leader logic and agrees only if it reaches the **same tier**, guaranteeing consensus on the categorical verdict rather than on any noisy underlying score.
+
+**Fail-closed telemetry policy:**
+
+- Transient faults (`429/500/502/503/504`, empty body, fetch exception) → clean revert (`[TRANSIENT]`); the report stays `PENDING` and no quarantine is applied.
+- Non-retryable failures (e.g. `404` unverifiable trace) → resolve as `TIER_FABRICATED_ATTACK`, slashing the reporter.
+
+**Prompt-injection safeguards:** every attacker-controlled field is wrapped in `<untrusted_input>…</untrusted_input>` tags, the system prompt instructs the model to ignore any instructions inside those tags, and telemetry strings are sanitized to printable ASCII before ever reaching the model.
+
+---
+
+## 7. Security & Audit Verification
+
+### 7.1 Test Suite — 42 direct-mode tests
+
+The direct-mode suite exercises every key path and adversarial edge case in-memory (no Docker, ~1s):
+
+```bash
+.venv/bin/pytest tests/direct/ -v
+# ...
+# 42 passed
+```
+
+> **Toolchain note:** the live contract targets the v0.3.0 runner (`py-genlayer:5jyc…`) on Studio-dev and is verified on-chain. The 42-test suite validates the protocol logic and passes against a matching v0.3.0 `gltest` toolchain; the older `gltest 0.29.2` in this environment cannot load the v0.3.0 runner, so run the suite with the v0.3.0 toolchain (or an older-SDK build) to reproduce locally.
+
+Coverage highlights: bounty funding, all-platform reporting & validation, fail-closed telemetry (`429/500`/empty), URL/injection rejection, tier→payout binding, adversarial slashing (fabricated + `404`), multi-cycle solvency, pull settlement, multi-wallet & cross-platform replay, appeal upheld/rejected, escalating bonds, bounty-farming cooldown & pool scaling, paginated views, quarantine expiry/recovery, antibody revocation, boolean anti-spoofing, bounded-liveness reclaim, and two audit regressions (solvency after a pre-appeal withdrawal, and a critical report against an empty pool).
+
+### 7.2 Protection Matrix
+
+| Threat | Mechanism |
+| :--- | :--- |
+| **Reentrancy / value leakage** | Strict CEI + pull withdrawal, `on="finalized"` settlement |
+| **Cross-wallet / cross-platform replay** | `sha256(platform ‖ target ‖ trace)` digest across `pending` + `evaluated` sets |
+| **SSRF / URL injection** | Trace-id-only inputs; deterministic whitelisted URL templates; `://` rejected |
+| **Prompt injection** | `<untrusted_input>` fencing + ASCII sanitization + guardrail system prompt |
+| **Consensus divergence** | Coarse telemetry pre-quantization; agreement on categorical tier only |
+| **Validator error opacity** | Safe, sandboxed `gl.vm.run_nondet` |
+| **Griefing (false reports)** | Bonded reports; escalating bond per upheld appeal (`1 + defended`) |
+| **Bounty farming** | 7-day per-target cooldown; payout capped to `pool // 10` and clamped to pool |
+| **Liveness lock-up** | `reclaim_expired_report_bond` after the 7-day timeout |
+| **Storage DoS** | All list views bounded by `MAX_PAGE_LIMIT = 50` |
+| **Integer overflow / underflow / ÷0** | `u256` wrapping, `min`-guarded subtractions, constant divisors |
+
+### 7.3 Solvency Guarantee
+
+The invariant `Balance = Pool + Reserves + Claimable + Bonds` is preserved by construction and asserted by tests. Slashes route to reserves, refunds and bounties route to claimable, and the bounty pool is restored on upheld appeals whenever the leaked value is still reclaimable — otherwise it remains fully accounted for in `total_claimed`.
+
+### 7.4 Optimistic Payout Dynamics & Post-Finalization Appeal Trade-off
+
+**Mechanism.** `withdraw()` settles the caller's `claimable_balances` entry under GenVM `on="finalized"` semantics: value only leaves the contract once the underlying evaluation is finalized by consensus, so an evaluation that is appealed and slashed *within the same finalization window* cannot leak value.
+
+**Residual trade-off.** The appeal claw-back is bounded by what is still on-hand — `slash_amount = min(current_claimable, orig_bond + orig_payout)`. If a reporter withdraws their claimable bounty *immediately after finalization* and the defendant then wins an appeal *afterward*, `current_claimable` is already `0`, so the slash reclaims nothing and the paid bounty is **not** restored to `bounty_pool_atto` — the bounty escrow is economically depleted. This does **not** break the solvency invariant: the withdrawn value stays fully accounted for in `total_claimed_atto` (`Balance = Pool + Reserves + Claimable + Bonds` still holds). The loss is economic (a depleted bounty pool after a successful grief-then-withdraw), not an insolvency. This exact case is pinned by `test_solvency_preserved_when_reporter_withdrew_before_appeal`.
+
+**Roadmap (Phage v2 — Timelock Challenge Window).** A configurable **24–48h Challenge Window** will hold verified bounties in a new `queued_payouts` state before they graduate to `claimable_balances`. A payout becomes withdrawable only after the window elapses with no upheld appeal, fully eliminating the front-running withdrawal edge case while preserving the current `on="finalized"` settlement guarantees.
+
+---
+
+## 8. Setup, Testing & Deployment
+
+### 8.1 Prerequisites
+
+- Python 3.12 (contract runtime & tests)
+- The GenLayer test toolchain (`genlayer-test`, provides the `gltest` direct runner)
+- Node.js 20+ and npm (frontend)
+- The `genlayer` CLI (`npm i -g genlayer`) for deployment
+
+### 8.2 Run the Contract Test Suite
+
+```bash
+# from the repository root, using the project virtualenv
+.venv/bin/pytest tests/direct/ -v      # expect: 42 passed
+```
+
+The direct runner loads the contract against its pinned runner
+(`py-genlayer:5jyc…`), mocks web/LLM calls, and executes entirely in-memory.
+
+### 8.3 Deploy to GenLayer Studio-dev
+
+The constructor takes **no arguments**, so deployment needs only the contract path and RPC:
+
+```bash
+# Optional: select the network preset
+genlayer network set studio-dev
+
+# Deploy (Chain ID 61997)
+genlayer deploy --contract contracts/phage_sentinel.py --rpc https://studio-dev.genlayer.com/api
+
+# Smoke-test the live contract
+genlayer call <DEPLOYED_ADDRESS> get_registry_overview --rpc https://studio-dev.genlayer.com/api
+```
+
+Network parameters live in `.env` / `.env.example` (`GENLAYER_RPC_URL`, `GENLAYER_CHAIN_ID=61997`, `GENLAYER_EXPLORER_URL`) and `gltest.config.yaml`.
+
+---
+
+## 9. Frontend dApp
+
+A React 19 + Vite + TypeScript single-page app lives in `frontend/`. It provides the Sentinel dashboard, agent inspector, reporting portal, antibody registry, appeal chamber, and a real **wallet connection** flow.
+
+### 9.1 Wallet Integration
+
+Wallet handling is implemented in `frontend/src/lib/useWallet.ts` as a self-contained EIP-1193 hook (no heavyweight web3 dependency):
+
+- **Connect** — requests accounts via `eth_requestAccounts`, then prompts the wallet to switch to **Studio-dev (chain `0xf22d` / 61997)**, auto-adding the network (`wallet_addEthereumChain`) if unknown. Fetches the live GEN balance.
+- **Graceful failure** — user rejection (`4001`), already-pending requests (`-32002`), missing provider, and network-switch rejection all surface as non-fatal toasts.
+- **Disconnect** — an explicit **Disconnect** button wipes address/balance/chain state, clears the `phage.wallet.*` localStorage keys, and immediately reflects the disconnected state in the UI.
+- **Live sync** — listens to `accountsChanged`, `chainChanged`, and `disconnect` provider events to auto-reset or re-sync the session. A silent reconnect on reload only occurs if the user did not explicitly disconnect.
+
+### 9.2 Local Development
+
+```bash
+cd frontend
+npm install
+npm run dev        # Vite dev server (hot reload)
+npm run build      # type-check (tsc -b) + production bundle → dist/  (zero errors)
+npm run preview    # serve the production build locally
+npm run lint       # oxlint
+```
+
+To interact with the live contract, install MetaMask, click **Connect**, and approve the Studio-dev network prompt.
+
+---
+
+## 10. Repository Layout
+
+```
+Phage/
+├── contracts/
+│   └── phage_sentinel.py            # The Intelligent Contract (GenVM Python)
+├── tests/
+│   └── direct/
+│       ├── conftest.py              # Fixtures + web/LLM mock helpers
+│       └── test_phage_sentinel.py   # 42-test direct-mode suite
+├── frontend/                        # React 19 + Vite + TS dApp
+│   └── src/
+│       ├── lib/
+│       │   ├── contract.ts          # Network config + typed contract models
+│       │   ├── useWallet.ts         # EIP-1193 connect/disconnect hook
+│       │   └── format.ts
+│       ├── components/              # Dashboard, inspector, portal, appeal chamber…
+│       ├── types/ethereum.d.ts      # Minimal EIP-1193 provider typings
+│       └── App.tsx
+├── gltest.config.yaml               # Direct-runner / network config
+├── pytest.ini                       # Test discovery
+├── .env / .env.example              # RPC, chain id, explorer, deployer
+└── README.md
+```
+
+---
+
+## 11. Disclaimer & License
+
+Phage Sentinel is research-grade software provided **as-is** for the GenLayer ecosystem. It has not undergone a third-party security audit; the 42-test suite and the invariants documented above are the current verification baseline. Deploy to mainnet-equivalent environments at your own risk and after independent review.
+
+Released under the **MIT License**.
