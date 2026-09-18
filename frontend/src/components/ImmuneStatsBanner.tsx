@@ -1,19 +1,35 @@
+import { Loader2, RefreshCw } from 'lucide-react';
 import type { ProtocolStats } from '../lib/contract';
 
 interface ImmuneStatsBannerProps {
   stats: ProtocolStats;
+  loading: boolean;
   onFundPoolClick: () => void;
+  onRefresh: () => void;
 }
 
-export function ImmuneStatsBanner({ stats, onFundPoolClick }: ImmuneStatsBannerProps) {
+export function ImmuneStatsBanner({ stats, loading, onFundPoolClick, onRefresh }: ImmuneStatsBannerProps) {
   return (
     <section className="strip" aria-label="Protocol telemetry">
       <div className="readout">
         <div className="readout-top">
-          <span className="readout-label">Bounty pool</span>
-          <button type="button" className="btn btn-ghost" style={{ minHeight: 32, padding: '0 10px', fontSize: 12 }} onClick={onFundPoolClick}>
-            Fund
-          </button>
+          <span className="readout-label cluster" style={{ gap: 6 }}>
+            Bounty pool
+            {loading && <Loader2 size={11} className="spin" aria-label="Loading live state" />}
+          </span>
+          <div className="cluster" style={{ gap: 4 }}>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="Refresh live contract state"
+              onClick={onRefresh}
+            >
+              <RefreshCw size={13} />
+            </button>
+            <button type="button" className="btn btn-ghost" style={{ minHeight: 32, padding: '0 10px', fontSize: 12 }} onClick={onFundPoolClick}>
+              Fund
+            </button>
+          </div>
         </div>
         <div>
           <span className="readout-value">{stats.bounty_pool_gen}</span>

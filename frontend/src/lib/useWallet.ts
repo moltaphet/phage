@@ -30,6 +30,9 @@ export interface UseWalletResult extends WalletState {
   connect: () => Promise<string | null>;
   disconnect: () => void;
   switchNetwork: () => Promise<boolean>;
+  // The live injected EIP-1193 provider, used to build a signing GenLayer client.
+  getProvider: () => Eip1193Provider | null;
+  refreshBalance: () => void;
 }
 
 interface ProviderRpcError {
@@ -280,5 +283,11 @@ export function useWallet(): UseWalletResult {
     };
   }, [patch, refreshBalance, resetState, syncSession]);
 
-  return { ...state, connect, disconnect, switchNetwork };
+  const getProvider = useCallback(() => providerRef.current ?? getInjectedProvider(), []);
+
+  const refreshBalanceNow = useCallback(() => {
+    if (state.address) void refreshBalance(state.address);
+  }, [refreshBalance, state.address]);
+
+  return { ...state, connect, disconnect, switchNetwork, getProvider, refreshBalance: refreshBalanceNow };
 }

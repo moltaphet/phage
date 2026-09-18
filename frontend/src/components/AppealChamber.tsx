@@ -1,63 +1,50 @@
-import { useState } from 'react';
-import { AlertCircle, Lock, Send } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { AlertCircle, Loader2, Lock, Send } from 'lucide-react';
 import type { AppealRecord, QuarantineInfo } from '../lib/contract';
 import { formatIso, shortHex, tierLabel } from '../lib/format';
 
 interface AppealChamberProps {
   quarantinedAgents: QuarantineInfo[];
+  recentAppeals: AppealRecord[];
+  initialTarget: string;
   onSubmitAppeal: (data: {
     targetAgent: string;
     proofTraceId: string;
     platform: string;
     reason: string;
-    appealBondGen: string;
-  }) => void;
+  }) => Promise<void>;
   walletConnected: boolean;
   onConnectWallet: () => void;
 }
 
+const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+
 export function AppealChamber({
   quarantinedAgents,
+  recentAppeals,
+  initialTarget,
   onSubmitAppeal,
   walletConnected,
   onConnectWallet,
 }: AppealChamberProps) {
-  const [selectedAgent, setSelectedAgent] = useState('');
+  const [selectedAgent, setSelectedAgent] = useState(initialTarget);
   const [proofTraceId, setProofTraceId] = useState('');
   const [platform, setPlatform] = useState('GITHUB_AUDIT');
   const [reason, setReason] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const [recentAppeals] = useState<AppealRecord[]>([
-    {
-      appeal_id: 'APP-2026-004',
-      target_agent: '0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc',
-      appellant: '0x12aBc...Def45',
-      appeal_bond_gen: '0.20',
-      proof_trace_id: 'patch/security-audit-v1.4-verified',
-      platform: 'GITHUB_AUDIT',
-      state: 'UPHELD',
-      timestamp_iso: '2026-09-10T16:40:00Z',
-    },
-    {
-      appeal_id: 'APP-2026-003',
-      target_agent: '0x3f5CE5FBFe3E9af3971dD833D26bA9b5C936f0bE',
-      appellant: '0x88fEd...3321A',
-      appeal_bond_gen: '0.20',
-      proof_trace_id: 'claim-accidental-slippage-dispute',
-      platform: 'TX_TRACE',
-      state: 'REJECTED',
-      timestamp_iso: '2026-09-08T09:20:00Z',
-    },
-  ]);
+  useEffect(() => {
+    if (initialTarget) setSelectedAgent(initialTarget);
+  }, [initialTarget]);
 
   const activeQuarantined = quarantinedAgents.filter((q) => q.is_active);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     const cleanAddress = selectedAgent.trim();
-    if (!cleanAddress || !/^0x[a-fA-F0-9]{40}$/.test(cleanAddress)) {
+    if (!ADDRESS_RE.test(cleanAddress)) {
       setErrorMsg('Select or enter a valid 40-character target agent address.');
       return;
     }
@@ -69,13 +56,21 @@ export function AppealChamber({
       setErrorMsg('State grounds for appeal with at least 15 characters.');
       return;
     }
-    onSubmitAppeal({
-      targetAgent: cleanAddress,
-      proofTraceId: proofTraceId.trim(),
-      platform,
-      reason: reason.trim(),
-      appealBondGen: '0.20',
-    });
+    setSubmitting(true);
+    try {
+      await onSubmitAppeal({
+        targetAgent: cleanAddress,
+        proofTraceId: proofTraceId.trim(),
+        platform,
+        reason: reason.trim(),
+      });
+      setProofTraceId('');
+      setReason('');
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message.split('\n')[0] : 'Appeal transaction failed.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -85,12 +80,12 @@ export function AppealChamber({
           <div>
             <h2 className="section-title">Appeal chamber</h2>
             <p className="section-copy">
-              Contest a false-positive quarantine with patched code or clean telemetry. Validators re-audit. If upheld, isolation lifts and the antibody is revoked.
+              Contest a false-positive quarantine with patched code or clean telemetry. Validators re-audit on-chain. If upheld, isolation lifts and the antibody is revoked.
             </p>
           </div>
           <div style={{ textAlign: 'right' }}>
             <div className="label">Appeal bond</div>
-            <div className="bond-value" style={{ color: 'var(--cytoplasm)' }}>{'0.20 GEN'}</div>
+            <div className="bond-value" style={{ color: 'var(--cytoplasm)' }}>0.20 GEN</div>
           </div>
         </div>
 
@@ -148,7 +143,7 @@ export function AppealChamber({
               className="input mono"
               value={proofTraceId}
               onChange={(e) => setProofTraceId(e.target.value)}
-              placeholder="github.com/org/repo/commit/9f38c1a"
+              placeholder="org/repo/commit-9f38c1a"
             />
           </div>
 
@@ -167,13 +162,13 @@ export function AppealChamber({
           </div>
 
           <p className="help">
-            {'Deposit 0.20 GEN. If the swarm verifies remediation, the bond is refunded plus 0.05 GEN restitution, quarantine lifts, and the antibody is revoked. Frivolous appeals are forfeited to the bounty pool.'}
+            Deposit 0.20 GEN. If consensus verifies remediation, the bond is refunded to your claimable vault, quarantine lifts, and the antibody is revoked. Rejected appeals forfeit the bond to protocol reserves.
           </p>
 
           {walletConnected ? (
-            <button type="submit" className="btn btn-cytoplasm btn-block">
-              <Send size={16} aria-hidden="true" />
-              {'Submit appeal (0.20 GEN)'}
+            <button type="submit" className="btn btn-cytoplasm btn-block" disabled={submitting}>
+              {submitting ? <Loader2 size={16} className="spin" /> : <Send size={16} aria-hidden="true" />}
+              {submitting ? 'Running consensus on-chain…' : 'Submit appeal (0.20 GEN)'}
             </button>
           ) : (
             <button type="button" className="btn btn-stain btn-block" onClick={onConnectWallet}>
@@ -189,29 +184,35 @@ export function AppealChamber({
           <h3 className="h3">Recent decisions</h3>
           <span className="chip">On-chain verdicts</span>
         </div>
-        <div className="stack" style={{ gap: 10 }}>
-          {recentAppeals.map((app) => (
-            <div key={app.appeal_id} className="appeal-row">
-              <div>
-                <div className="cluster" style={{ gap: 8 }}>
-                  <span className="hash">{app.appeal_id}</span>
-                  <span className={`chip ${app.state === 'UPHELD' ? 'chip-ok' : 'chip-iso'}`}>
-                    {app.state === 'UPHELD' ? 'Upheld' : 'Rejected'}
-                  </span>
-                  <span className="chip">{app.platform}</span>
+        {recentAppeals.length === 0 ? (
+          <p className="help" style={{ padding: '8px 2px' }}>
+            No appeals recorded in this session yet. Submitted appeals and their real consensus verdicts appear here.
+          </p>
+        ) : (
+          <div className="stack" style={{ gap: 10 }}>
+            {recentAppeals.map((app) => (
+              <div key={app.appeal_id} className="appeal-row">
+                <div>
+                  <div className="cluster" style={{ gap: 8 }}>
+                    <span className="hash">{app.appeal_id}</span>
+                    <span className={`chip ${app.state === 'UPHELD' ? 'chip-ok' : 'chip-iso'}`}>
+                      {app.state === 'UPHELD' ? 'Upheld' : app.state === 'REJECTED' ? 'Rejected' : 'Pending'}
+                    </span>
+                    <span className="chip">{app.platform}</span>
+                  </div>
+                  <p className="hash" style={{ marginTop: 8 }}>Agent {shortHex(app.target_agent, 10, 8)}</p>
+                  <p className="help" style={{ marginTop: 4 }}>Proof: {app.proof_trace_id}</p>
                 </div>
-                <p className="hash" style={{ marginTop: 8 }}>Agent {shortHex(app.target_agent, 10, 8)}</p>
-                <p className="help" style={{ marginTop: 4 }}>Proof: {app.proof_trace_id}</p>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontWeight: 700 }}>
-                  {app.state === 'UPHELD' ? '+0.25 GEN awarded' : '-0.20 GEN forfeited'}
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontWeight: 700 }}>
+                    {app.state === 'UPHELD' ? `+${app.appeal_bond_gen} GEN refunded` : `−${app.appeal_bond_gen} GEN forfeited`}
+                  </div>
+                  <div className="help">{formatIso(app.timestamp_iso)}</div>
                 </div>
-                <div className="help">{formatIso(app.timestamp_iso)}</div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

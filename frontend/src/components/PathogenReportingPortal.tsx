@@ -1,46 +1,73 @@
-import { useState } from 'react';
-import { Info, Lock, Send } from 'lucide-react';
-import type { QuarantineInfo } from '../lib/contract';
+import { useEffect, useState } from 'react';
+import { Info, Loader2, Lock, Send } from 'lucide-react';
+import { getRequiredReporterBondGen } from '../lib/genlayer';
 
 interface PathogenReportingPortalProps {
-  quarantinedAgents: QuarantineInfo[];
+  initialTarget: string;
   onSubmitReport: (reportData: {
     targetAgent: string;
     platform: string;
     traceId: string;
     category: string;
     description: string;
-    bondGen: string;
   }) => void;
   walletConnected: boolean;
-  userAddress: string | null;
   onConnectWallet: () => void;
 }
 
+const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+
 export function PathogenReportingPortal({
-  quarantinedAgents,
+  initialTarget,
   onSubmitReport,
   walletConnected,
   onConnectWallet,
 }: PathogenReportingPortalProps) {
-  const [targetAgent, setTargetAgent] = useState('');
+  const [targetAgent, setTargetAgent] = useState(initialTarget);
   const [platform, setPlatform] = useState('AGENT_RPC');
   const [traceId, setTraceId] = useState('');
   const [category, setCategory] = useState('PROMPT_INJECTION');
   const [description, setDescription] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const [requiredBond, setRequiredBond] = useState('0.10');
+  const [bondLoading, setBondLoading] = useState(false);
 
-  const existingRecord = quarantinedAgents.find(
-    (q) => q.target_agent.toLowerCase() === targetAgent.trim().toLowerCase()
-  );
-  const defendedAppeals = existingRecord ? existingRecord.defended_appeals : 0;
-  const requiredBond = (0.1 * (1 + defendedAppeals)).toFixed(2);
+  // Prefill when navigated here from the inspector with a target.
+  useEffect(() => {
+    if (initialTarget) setTargetAgent(initialTarget);
+  }, [initialTarget]);
+
+  // Live read of the authoritative required reporter bond for the target. The
+  // contract escalates this per defended appeal, so we never guess it locally.
+  useEffect(() => {
+    const clean = targetAgent.trim();
+    if (!ADDRESS_RE.test(clean)) {
+      setRequiredBond('0.10');
+      return;
+    }
+    let cancelled = false;
+    setBondLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const bond = await getRequiredReporterBondGen(clean);
+        if (!cancelled) setRequiredBond(bond);
+      } catch {
+        if (!cancelled) setRequiredBond('0.10');
+      } finally {
+        if (!cancelled) setBondLoading(false);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [targetAgent]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
     const cleanAddress = targetAgent.trim();
-    if (!cleanAddress || !/^0x[a-fA-F0-9]{40}$/.test(cleanAddress)) {
+    if (!ADDRESS_RE.test(cleanAddress)) {
       setFormError('Enter a valid 40-character hexadecimal address (0x…).');
       return;
     }
@@ -58,7 +85,6 @@ export function PathogenReportingPortal({
       traceId: traceId.trim(),
       category,
       description: description.trim(),
-      bondGen: requiredBond,
     });
   };
 
@@ -76,7 +102,7 @@ export function PathogenReportingPortal({
         <div>
           <h2 className="section-title">Report a pathogen</h2>
           <p className="section-copy">
-            Stake a reporter bond and submit forensic telemetry. GenLayer validators fetch the trace, classify the threat, and either quarantine the agent or slash the bond.
+            Stake a reporter bond and submit forensic telemetry. GenLayer validators fetch the trace, classify the threat, and either quarantine the agent or slash the bond — all on-chain.
           </p>
         </div>
         <button type="button" className="btn btn-ghost" onClick={loadSample}>
@@ -142,7 +168,7 @@ export function PathogenReportingPortal({
               <option value="SYBIL_ORACLE_POISON">Oracle manipulation</option>
               <option value="AGENT_MALICIOUS_FORK">Hostile agent fork</option>
             </select>
-            <p className="help">Primary exploit vector for classification.</p>
+            <p className="help">Primary exploit vector, recorded with your report.</p>
           </div>
         </div>
 
@@ -164,20 +190,22 @@ export function PathogenReportingPortal({
           <div>
             <h4 className="h3" style={{ fontSize: 16 }}>Anti-spam staking bond</h4>
             <p className="help" style={{ marginTop: 6, maxWidth: '52ch' }}>
-              {'Formula: 0.10 GEN × (1 + defended_appeals). Refunded plus a 0.15 GEN bounty if the pathogen is verified. Slashed if the report is fabricated.'}
-              {defendedAppeals > 0 ? ` This target has ${defendedAppeals} defended appeal(s).` : ''}
+              Read live from the contract as 0.10 GEN × (1 + defended_appeals). Refunded to your claimable vault plus any bounty if the pathogen is verified. Slashed to reserves if the report is fabricated.
             </p>
           </div>
           <div style={{ textAlign: 'right' }}>
             <div className="label">Required bond</div>
-            <div className="bond-value">{requiredBond} GEN</div>
+            <div className="bond-value cluster" style={{ gap: 6, justifyContent: 'flex-end' }}>
+              {bondLoading && <Loader2 size={13} className="spin" />}
+              {requiredBond} GEN
+            </div>
           </div>
         </div>
 
         {walletConnected ? (
           <button type="submit" className="btn btn-hemolysis btn-block">
             <Send size={16} aria-hidden="true" />
-            Submit to consensus ({requiredBond} GEN)
+            Sign report &amp; evaluate on-chain ({requiredBond} GEN)
           </button>
         ) : (
           <button type="button" className="btn btn-stain btn-block" onClick={onConnectWallet}>

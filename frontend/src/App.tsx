@@ -1,9 +1,23 @@
-import { useEffect, useState } from 'react';
-import { Activity, BookOpen, Dna, HelpCircle, Scale, Search, ShieldAlert, Terminal } from 'lucide-react';
-import type { Antibody, ProtocolStats, QuarantineInfo } from './lib/contract';
-import { INITIAL_ANTIBODIES, INITIAL_QUARANTINED_AGENTS, INITIAL_STATS, STUDIONET_CHAIN_ID } from './lib/contract';
+import { useCallback, useEffect, useState } from 'react';
+import { Activity, AlertTriangle, BookOpen, Dna, HelpCircle, RefreshCw, Scale, Search, ShieldAlert, Terminal } from 'lucide-react';
+import type { Antibody, AppealRecord, ProtocolStats, QuarantineInfo } from './lib/contract';
+import { STUDIONET_CHAIN_ID } from './lib/contract';
+import { attoToGen, genToAtto, shortHex } from './lib/format';
 import { useWallet } from './lib/useWallet';
-import { shortHex } from './lib/format';
+import {
+  appealQuarantine,
+  deriveAppealId,
+  fundBountyPool,
+  getAppeal,
+  getRequiredReporterBondAtto,
+  getTotalAppeals,
+  getWriteClient,
+  loadProtocolState,
+  recoverAgent,
+  waitForReceipt,
+  withdraw,
+} from './lib/genlayer';
+import type { GenClient } from './lib/genlayer';
 import { Navbar } from './components/Navbar';
 import { ImmuneStatsBanner } from './components/ImmuneStatsBanner';
 import { ThreeImmuneCanvas } from './components/ThreeImmuneCanvas';
@@ -14,7 +28,10 @@ import { AppealChamber } from './components/AppealChamber';
 import { AboutSection } from './components/AboutSection';
 import { FaqSection } from './components/FaqSection';
 import { ModernFooter } from './components/ModernFooter';
+import { ClaimVault } from './components/ClaimVault';
+import { FundPoolModal } from './components/FundPoolModal';
 import { ConsensusTriageModal } from './components/ConsensusTriageModal';
+import type { TriageReportData } from './components/ConsensusTriageModal';
 import { DeveloperIntegrationModal } from './components/DeveloperIntegrationModal';
 
 const TABS = [
@@ -27,33 +44,81 @@ const TABS = [
   { id: 'faq', label: 'FAQ', icon: HelpCircle },
 ];
 
+const EMPTY_STATS: ProtocolStats = {
+  owner: '',
+  bounty_pool_gen: '0.0000',
+  protocol_reserves_gen: '0.0000',
+  total_deposited_gen: '0.0000',
+  total_claimed_gen: '0.0000',
+  total_quarantines_active: 0,
+  total_antibodies_minted: 0,
+  total_reports_evaluated: 0,
+  total_appeals_processed: 0,
+  system_health_pct: 100,
+};
+
+const APPEAL_BOND_GEN = '0.20'; // APPEAL_BOND = 0.2 GEN, enforced on-chain.
+
+type Toast = { text: string; type: 'success' | 'info' | 'error'; href?: string };
+
+function describeError(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const record = err as { shortMessage?: unknown; details?: unknown; message?: unknown };
+    if (typeof record.shortMessage === 'string') return record.shortMessage;
+    if (typeof record.details === 'string') return record.details;
+    if (typeof record.message === 'string') return record.message.split('\n')[0];
+  }
+  return 'Transaction failed.';
+}
+
 export function App() {
   const [activeTab, setActiveTab] = useState('sentinel');
   const [isDevModalOpen, setIsDevModalOpen] = useState(false);
   const [isConsensusModalOpen, setIsConsensusModalOpen] = useState(false);
-  const [stats, setStats] = useState<ProtocolStats>(INITIAL_STATS);
-  const [quarantinedAgents, setQuarantinedAgents] = useState<QuarantineInfo[]>(INITIAL_QUARANTINED_AGENTS);
-  const [antibodies, setAntibodies] = useState<Antibody[]>(INITIAL_ANTIBODIES);
-  const wallet = useWallet();
-  const [pendingReportData, setPendingReportData] = useState<{
-    targetAgent: string;
-    platform: string;
-    traceId: string;
-    category: string;
-    description: string;
-    bondGen: string;
-  } | null>(null);
-  const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'info' } | null>(null);
+  const [isFundModalOpen, setIsFundModalOpen] = useState(false);
 
-  const showToast = (text: string, type: 'success' | 'info' = 'success') => {
-    setToastMessage({ text, type });
-    setTimeout(() => setToastMessage(null), 4000);
-  };
+  const [stats, setStats] = useState<ProtocolStats>(EMPTY_STATS);
+  const [quarantinedAgents, setQuarantinedAgents] = useState<QuarantineInfo[]>([]);
+  const [antibodies, setAntibodies] = useState<Antibody[]>([]);
+  const [appeals, setAppeals] = useState<AppealRecord[]>([]);
+  const [loadStatus, setLoadStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [vaultRefreshKey, setVaultRefreshKey] = useState(0);
+
+  const wallet = useWallet();
+  const [pendingReportData, setPendingReportData] = useState<TriageReportData | null>(null);
+  const [reportClient, setReportClient] = useState<GenClient | null>(null);
+  const [prefillTarget, setPrefillTarget] = useState('');
+  const [toastMessage, setToastMessage] = useState<Toast | null>(null);
+
+  const showToast = useCallback((text: string, type: Toast['type'] = 'success', href?: string) => {
+    setToastMessage({ text, type, href });
+    setTimeout(() => setToastMessage(null), href ? 9000 : 5000);
+  }, []);
+
+  // Hydrate the entire dashboard from live contract reads. No seeded/mock state.
+  const refreshAll = useCallback(async () => {
+    try {
+      const state = await loadProtocolState();
+      setStats(state.stats);
+      setQuarantinedAgents(state.quarantinedAgents);
+      setAntibodies(state.antibodies);
+      setLoadStatus('ready');
+      setLoadError(null);
+    } catch (err) {
+      setLoadStatus('error');
+      setLoadError(describeError(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAll();
+  }, [refreshAll]);
 
   // Surface wallet errors (rejections, pending requests, network issues) as toasts.
   useEffect(() => {
     if (wallet.error) showToast(wallet.error, 'info');
-  }, [wallet.error]);
+  }, [wallet.error, showToast]);
 
   const handleConnectWallet = async () => {
     const address = await wallet.connect();
@@ -67,99 +132,170 @@ export function App() {
     showToast('Wallet disconnected', 'info');
   };
 
-  const handleFundPool = () => {
-    showToast('Simulated deposit: +1.00 GEN to the bounty pool');
-    setStats((prev) => ({
-      ...prev,
-      bounty_pool_gen: (parseFloat(prev.bounty_pool_gen) + 1).toFixed(2),
-      total_deposited_gen: (parseFloat(prev.total_deposited_gen) + 1).toFixed(2),
-    }));
-  };
+  // Resolve a signing client, guarding on connection + network. Returns null and
+  // toasts if the wallet is not ready — we never proceed without a real signer.
+  const getSigner = useCallback((): GenClient | null => {
+    if (!wallet.isConnected || !wallet.address) {
+      showToast('Connect your wallet to sign this transaction.', 'info');
+      return null;
+    }
+    if (!wallet.isCorrectNetwork) {
+      showToast('Switch to GenLayer Studio-dev (chain 61997) to continue.', 'info');
+      void wallet.switchNetwork();
+      return null;
+    }
+    const provider = wallet.getProvider();
+    if (!provider) {
+      showToast('No wallet provider available.', 'info');
+      return null;
+    }
+    return getWriteClient(wallet.address, provider);
+  }, [wallet, showToast]);
 
   const handleSelectTab = (tab: string) => {
     setActiveTab(tab);
     window.scrollTo({ top: 0 });
   };
 
-  const handleCompleteConsensus = (result: {
+  const handleFundPool = useCallback(
+    async (amountGen: string) => {
+      const client = getSigner();
+      if (!client) throw new Error('Wallet not connected.');
+      const valueAtto = genToAtto(amountGen);
+      if (valueAtto <= 0n) throw new Error('Enter an amount greater than zero.');
+
+      showToast('Confirm the deposit in your wallet…', 'info');
+      const hash = await fundBountyPool(client, valueAtto);
+      showToast('Deposit submitted — awaiting confirmation.', 'info', hash);
+      await waitForReceipt(client, hash);
+      showToast(`Deposited ${amountGen} GEN into the bounty pool.`, 'success', hash);
+      setVaultRefreshKey((k) => k + 1);
+      wallet.refreshBalance();
+      await refreshAll();
+    },
+    [getSigner, showToast, refreshAll, wallet],
+  );
+
+  // Report flow: read the authoritative required bond, then hand the review to the
+  // triage modal which signs report_pathogen + evaluate_pathogen for real.
+  const handleReportSubmit = async (data: {
     targetAgent: string;
-    quarantineSeconds: number;
-    reasonTier: string;
-    antibodyHash: string;
-    bountyPayoutGen: string;
-    traceId: string;
     platform: string;
+    traceId: string;
+    category: string;
+    description: string;
   }) => {
-    const newQuarantine: QuarantineInfo = {
-      target_agent: result.targetAgent,
-      is_active: true,
-      quarantine_until_utc: Math.floor(Date.now() / 1000) + result.quarantineSeconds,
-      quarantine_until_iso: new Date(Date.now() + result.quarantineSeconds * 1000).toISOString(),
-      reason_tier: result.reasonTier,
-      last_report_id: `REP-${Math.floor(Math.random() * 9000 + 1000)}`,
-      total_quarantines: 1,
-      antibody_hash: result.antibodyHash,
-      defended_appeals: 0,
-      current_required_bond_gen: '0.10',
-    };
+    const client = getSigner();
+    if (!client) return;
 
-    setQuarantinedAgents((prev) => {
-      const filtered = prev.filter((q) => q.target_agent.toLowerCase() !== result.targetAgent.toLowerCase());
-      return [newQuarantine, ...filtered];
+    let bondAtto: bigint;
+    try {
+      bondAtto = await getRequiredReporterBondAtto(data.targetAgent);
+      if (bondAtto <= 0n) bondAtto = genToAtto('0.10');
+    } catch {
+      // The contract still enforces the true bond; fall back to the 0.1 GEN base.
+      bondAtto = genToAtto('0.10');
+    }
+
+    const reportId = `report-${data.targetAgent.slice(2, 10).toLowerCase()}-${Date.now()}`;
+    setReportClient(client);
+    setPendingReportData({
+      reportId,
+      targetAgent: data.targetAgent,
+      platform: data.platform,
+      traceId: data.traceId,
+      bondAtto,
+      bondGen: attoToGen(bondAtto.toString()),
+      category: data.category,
+      description: data.description,
     });
-
-    const newAntibody: Antibody = {
-      antibody_hash: result.antibodyHash,
-      target_agent: result.targetAgent,
-      platform: result.platform,
-      trace_id: result.traceId,
-      pathogen_digest: `sha256:${result.antibodyHash.substring(2, 8)}…`,
-      mint_timestamp_utc: Math.floor(Date.now() / 1000),
-      mint_timestamp_iso: new Date().toISOString(),
-      is_active: true,
-    };
-
-    setAntibodies((prev) => [newAntibody, ...prev]);
-    setStats((prev) => ({
-      ...prev,
-      total_quarantines_active: prev.total_quarantines_active + 1,
-      total_antibodies_minted: prev.total_antibodies_minted + 1,
-      total_reports_evaluated: prev.total_reports_evaluated + 1,
-      total_claimed_gen: (parseFloat(prev.total_claimed_gen) + parseFloat(result.bountyPayoutGen)).toFixed(2),
-    }));
-    showToast(`Pathogen quarantined. Antibody ${result.antibodyHash.substring(0, 10)}… minted.`);
+    setIsConsensusModalOpen(true);
   };
 
-  const handleSubmitAppeal = (data: {
+  const handleSubmitAppeal = async (data: {
     targetAgent: string;
     proofTraceId: string;
     platform: string;
     reason: string;
-    appealBondGen: string;
   }) => {
-    showToast(`Appeal submitted for ${data.targetAgent.substring(0, 10)}…`);
-    setQuarantinedAgents((prev) =>
-      prev.map((q) =>
-        q.target_agent.toLowerCase() === data.targetAgent.toLowerCase()
-          ? {
-              ...q,
-              is_active: false,
-              defended_appeals: q.defended_appeals + 1,
-              current_required_bond_gen: (0.1 * (1 + q.defended_appeals + 1)).toFixed(2),
-            }
-          : q
-      )
-    );
-    setAntibodies((prev) =>
-      prev.map((ab) =>
-        ab.target_agent.toLowerCase() === data.targetAgent.toLowerCase() ? { ...ab, is_active: false } : ab
-      )
-    );
-    setStats((prev) => ({
-      ...prev,
-      total_appeals_processed: prev.total_appeals_processed + 1,
-      total_quarantines_active: Math.max(0, prev.total_quarantines_active - 1),
-    }));
+    const client = getSigner();
+    if (!client) throw new Error('Wallet not connected.');
+
+    const bondAtto = genToAtto(APPEAL_BOND_GEN);
+    let totalBefore = 0;
+    try {
+      totalBefore = await getTotalAppeals();
+    } catch {
+      /* non-fatal: we still submit; id derivation may be skipped below */
+    }
+
+    showToast('Confirm the appeal bond in your wallet…', 'info');
+    const hash = await appealQuarantine(client, {
+      targetAgent: data.targetAgent,
+      proofTraceId: data.proofTraceId,
+      platform: data.platform,
+      bondAtto,
+    });
+    showToast('Appeal submitted — running consensus on-chain…', 'info', hash);
+    await waitForReceipt(client, hash);
+
+    // Read the real appeal verdict the contract just recorded.
+    try {
+      const appealId = deriveAppealId(data.targetAgent, totalBefore + 1);
+      const record = await getAppeal(appealId);
+      setAppeals((prev) => [record, ...prev.filter((a) => a.appeal_id !== record.appeal_id)]);
+      showToast(
+        record.state === 'UPHELD' ? 'Appeal upheld — quarantine lifted.' : `Appeal ${record.state.toLowerCase()}.`,
+        record.state === 'UPHELD' ? 'success' : 'info',
+        hash,
+      );
+    } catch {
+      showToast('Appeal recorded on-chain.', 'success', hash);
+    }
+
+    setVaultRefreshKey((k) => k + 1);
+    wallet.refreshBalance();
+    await refreshAll();
+  };
+
+  const handleWithdraw = useCallback(async () => {
+    const client = getSigner();
+    if (!client) throw new Error('Wallet not connected.');
+    showToast('Confirm the withdrawal in your wallet…', 'info');
+    const hash = await withdraw(client);
+    showToast('Withdrawal submitted — settling on finalization.', 'info', hash);
+    await waitForReceipt(client, hash);
+    showToast('Withdrawal settled.', 'success', hash);
+    setVaultRefreshKey((k) => k + 1);
+    wallet.refreshBalance();
+    await refreshAll();
+  }, [getSigner, showToast, refreshAll, wallet]);
+
+  const handleRecoverAgent = useCallback(
+    async (address: string) => {
+      const client = getSigner();
+      if (!client) throw new Error('Wallet not connected.');
+      showToast('Confirm recovery in your wallet…', 'info');
+      const hash = await recoverAgent(client, address);
+      showToast('Recovery submitted.', 'info', hash);
+      await waitForReceipt(client, hash);
+      showToast('Agent recovered from expired quarantine.', 'success', hash);
+      await refreshAll();
+    },
+    [getSigner, showToast, refreshAll],
+  );
+
+  const selectForReport = (address: string) => {
+    setPrefillTarget(address);
+    handleSelectTab('report');
+  };
+  const selectForAppeal = (address: string) => {
+    setPrefillTarget(address);
+    handleSelectTab('appeal');
+  };
+  const selectForInspect = (address: string) => {
+    setPrefillTarget(address);
+    handleSelectTab('inspector');
   };
 
   const activeAntibodies = antibodies.filter((a) => a.is_active).length;
@@ -170,8 +306,19 @@ export function App() {
 
       {toastMessage && (
         <div className="toast" role="status">
-          <span className={`pulse ${toastMessage.type === 'info' ? '' : ''}`} />
+          <span className="pulse" />
           <span>{toastMessage.text}</span>
+          {toastMessage.href && (
+            <a
+              href={`https://explorer-studio-dev.genlayer.com/tx/${toastMessage.href}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mono"
+              style={{ fontSize: 12, color: 'inherit' }}
+            >
+              {shortHex(toastMessage.href, 6, 4)} ↗
+            </a>
+          )}
         </div>
       )}
 
@@ -238,7 +385,23 @@ export function App() {
         )}
 
         <div className="wrap" style={{ paddingBottom: activeTab === 'sentinel' ? 0 : 24, paddingTop: activeTab === 'sentinel' ? 0 : 28 }}>
-          <ImmuneStatsBanner stats={stats} onFundPoolClick={handleFundPool} />
+          {loadStatus === 'error' && (
+            <div className="alert" role="alert" style={{ marginBottom: 16 }}>
+              <AlertTriangle size={16} aria-hidden="true" />
+              <span>
+                Live contract read failed: {loadError}. Showing no fabricated data.{' '}
+                <button type="button" className="btn btn-ghost" style={{ minHeight: 30, fontSize: 12 }} onClick={() => void refreshAll()}>
+                  <RefreshCw size={13} /> Retry
+                </button>
+              </span>
+            </div>
+          )}
+          <ImmuneStatsBanner
+            stats={stats}
+            loading={loadStatus === 'loading'}
+            onFundPoolClick={() => setIsFundModalOpen(true)}
+            onRefresh={() => void refreshAll()}
+          />
         </div>
 
         <div className="bench" id="workbench">
@@ -269,10 +432,17 @@ export function App() {
 
             {activeTab === 'sentinel' && (
               <div className="stack" style={{ gap: 56 }}>
+                <ClaimVault
+                  address={wallet.address}
+                  walletConnected={wallet.isConnected}
+                  refreshKey={vaultRefreshKey}
+                  onWithdraw={handleWithdraw}
+                />
                 <AgentHealthInspector
                   quarantinedAgents={quarantinedAgents}
-                  onSelectAgentForReport={() => handleSelectTab('report')}
-                  onSelectAgentForAppeal={() => handleSelectTab('appeal')}
+                  onSelectAgentForReport={selectForReport}
+                  onSelectAgentForAppeal={selectForAppeal}
+                  onRecoverAgent={handleRecoverAgent}
                 />
                 <AboutSection />
                 <FaqSection />
@@ -280,33 +450,41 @@ export function App() {
             )}
 
             {activeTab === 'inspector' && (
-              <AgentHealthInspector
-                quarantinedAgents={quarantinedAgents}
-                onSelectAgentForReport={() => handleSelectTab('report')}
-                onSelectAgentForAppeal={() => handleSelectTab('appeal')}
-              />
+              <div className="stack" style={{ gap: 32 }}>
+                <ClaimVault
+                  address={wallet.address}
+                  walletConnected={wallet.isConnected}
+                  refreshKey={vaultRefreshKey}
+                  onWithdraw={handleWithdraw}
+                />
+                <AgentHealthInspector
+                  quarantinedAgents={quarantinedAgents}
+                  onSelectAgentForReport={selectForReport}
+                  onSelectAgentForAppeal={selectForAppeal}
+                  onRecoverAgent={handleRecoverAgent}
+                  initialTarget={prefillTarget}
+                />
+              </div>
             )}
 
             {activeTab === 'report' && (
               <PathogenReportingPortal
-                quarantinedAgents={quarantinedAgents}
-                onSubmitReport={(data) => {
-                  setPendingReportData(data);
-                  setIsConsensusModalOpen(true);
-                }}
+                initialTarget={prefillTarget}
+                onSubmitReport={handleReportSubmit}
                 walletConnected={wallet.isConnected}
-                userAddress={wallet.address}
                 onConnectWallet={handleConnectWallet}
               />
             )}
 
             {activeTab === 'antibodies' && (
-              <AntibodyRegistryGrid antibodies={antibodies} onInspectAgent={() => handleSelectTab('inspector')} />
+              <AntibodyRegistryGrid antibodies={antibodies} onInspectAgent={selectForInspect} loading={loadStatus === 'loading'} />
             )}
 
             {activeTab === 'appeal' && (
               <AppealChamber
                 quarantinedAgents={quarantinedAgents}
+                recentAppeals={appeals}
+                initialTarget={prefillTarget}
                 onSubmitAppeal={handleSubmitAppeal}
                 walletConnected={wallet.isConnected}
                 onConnectWallet={handleConnectWallet}
@@ -323,7 +501,16 @@ export function App() {
         isOpen={isConsensusModalOpen}
         onClose={() => setIsConsensusModalOpen(false)}
         reportData={pendingReportData}
-        onCompleteConsensus={handleCompleteConsensus}
+        client={reportClient}
+        onResolved={refreshAll}
+      />
+
+      <FundPoolModal
+        isOpen={isFundModalOpen}
+        onClose={() => setIsFundModalOpen(false)}
+        onFund={handleFundPool}
+        walletConnected={wallet.isConnected}
+        onConnectWallet={handleConnectWallet}
       />
 
       <DeveloperIntegrationModal isOpen={isDevModalOpen} onClose={() => setIsDevModalOpen(false)} />

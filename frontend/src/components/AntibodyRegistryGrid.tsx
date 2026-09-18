@@ -7,9 +7,10 @@ import { formatIso, shortHex } from '../lib/format';
 interface AntibodyRegistryGridProps {
   antibodies: Antibody[];
   onInspectAgent: (address: string) => void;
+  loading: boolean;
 }
 
-export function AntibodyRegistryGrid({ antibodies, onInspectAgent }: AntibodyRegistryGridProps) {
+export function AntibodyRegistryGrid({ antibodies, onInspectAgent, loading }: AntibodyRegistryGridProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'REVOKED'>('ALL');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -72,7 +73,17 @@ export function AntibodyRegistryGrid({ antibodies, onInspectAgent }: AntibodyReg
         </div>
       </div>
 
-      {filtered.length === 0 ? (
+      {loading && antibodies.length === 0 ? (
+        <div className="empty">
+          <h3 className="h3">Loading antibodies…</h3>
+          <p className="help" style={{ marginTop: 8 }}>Reading the on-chain antibody registry.</p>
+        </div>
+      ) : antibodies.length === 0 ? (
+        <div className="empty">
+          <h3 className="h3">No antibodies minted yet</h3>
+          <p className="help" style={{ marginTop: 8 }}>Antibodies are minted on-chain when consensus classifies a report as a critical pathogen.</p>
+        </div>
+      ) : filtered.length === 0 ? (
         <div className="empty">
           <h3 className="h3">No antibodies match</h3>
           <p className="help" style={{ marginTop: 8 }}>Try another hash, agent, or reset the filter.</p>

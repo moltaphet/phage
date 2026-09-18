@@ -1,62 +1,100 @@
-import { useState } from 'react';
-import { Search, ShieldAlert, ShieldCheck, Clock } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Clock, Loader2, RotateCcw, Search, ShieldAlert, ShieldCheck } from 'lucide-react';
 import type { QuarantineInfo } from '../lib/contract';
+import { inspectAgent } from '../lib/genlayer';
 import { formatIso, shortHex, tierLabel } from '../lib/format';
 
 interface AgentHealthInspectorProps {
   quarantinedAgents: QuarantineInfo[];
   onSelectAgentForReport: (agentAddress: string) => void;
   onSelectAgentForAppeal: (agentAddress: string) => void;
+  onRecoverAgent: (agentAddress: string) => Promise<void>;
+  initialTarget?: string;
 }
+
+const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 
 export function AgentHealthInspector({
   quarantinedAgents,
   onSelectAgentForReport,
   onSelectAgentForAppeal,
+  onRecoverAgent,
+  initialTarget,
 }: AgentHealthInspectorProps) {
   const [searchAddress, setSearchAddress] = useState('');
   const [searchedAgent, setSearchedAgent] = useState<QuarantineInfo | null>(null);
-  const [hasSearched, setHasSearched] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [recovering, setRecovering] = useState(false);
+
+  const runInspect = async (rawAddress: string) => {
+    const address = rawAddress.trim();
+    if (!ADDRESS_RE.test(address)) {
+      setError('Enter a valid 40-character hexadecimal address (0x…).');
+      setSearchedAgent(null);
+      return;
+    }
+    setError(null);
+    setSearching(true);
+    try {
+      // Live on-chain read: get_quarantine_info + is_quarantined + defended count + bond.
+      const info = await inspectAgent(address);
+      setSearchedAgent(info);
+    } catch (err) {
+      setError(err instanceof Error ? err.message.split('\n')[0] : 'On-chain lookup failed.');
+      setSearchedAgent(null);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  // Auto-inspect when navigated here with a prefilled target (e.g. from the
+  // antibody registry). Runs a live contract read for that address.
+  useEffect(() => {
+    if (initialTarget && ADDRESS_RE.test(initialTarget.trim())) {
+      setSearchAddress(initialTarget);
+      void runInspect(initialTarget);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTarget]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    const query = searchAddress.trim().toLowerCase();
-    if (!query) return;
-
-    const match = quarantinedAgents.find((q) => q.target_agent.toLowerCase() === query);
-    if (match) {
-      setSearchedAgent(match);
-    } else {
-      setSearchedAgent({
-        target_agent: searchAddress.trim(),
-        is_active: false,
-        quarantine_until_utc: 0,
-        quarantine_until_iso: 'N/A',
-        reason_tier: 'TIER_BENIGN_NOMINAL',
-        last_report_id: 'NONE',
-        total_quarantines: 0,
-        antibody_hash: 'NONE',
-        defended_appeals: 0,
-        current_required_bond_gen: '0.10',
-      });
-    }
-    setHasSearched(true);
+    void runInspect(searchAddress);
   };
 
   const handleQuickInspect = (agent: QuarantineInfo) => {
     setSearchAddress(agent.target_agent);
-    setSearchedAgent(agent);
-    setHasSearched(true);
+    void runInspect(agent.target_agent);
+  };
+
+  const handleRecover = async (address: string) => {
+    setRecovering(true);
+    try {
+      await onRecoverAgent(address);
+      await runInspect(address);
+    } catch {
+      /* toast surfaced by the caller */
+    } finally {
+      setRecovering(false);
+    }
   };
 
   const active = quarantinedAgents.filter((a) => a.is_active);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const showRecover =
+    searchedAgent !== null &&
+    !searchedAgent.is_active &&
+    searchedAgent.quarantine_until_utc > 0 &&
+    searchedAgent.quarantine_until_utc < nowSec &&
+    searchedAgent.total_quarantines > 0;
 
   return (
     <div className="stack" style={{ gap: 24 }}>
       <div>
         <h2 className="section-title">Immune inspector</h2>
         <p className="section-copy">
-          Look up any agent address. Phage returns the live quarantine verdict, required reporter bond, and linked antibody if one exists.
+          Look up any agent address. Phage reads the live quarantine verdict, required reporter bond, and defended-appeal count straight from the contract.
         </p>
       </div>
 
@@ -69,12 +107,18 @@ export function AgentHealthInspector({
           placeholder="Paste agent address (0x…)"
           aria-label="Agent address"
         />
-        <button type="submit" className="btn btn-stain" style={{ minHeight: 40 }}>
-          Inspect
+        <button type="submit" className="btn btn-stain" style={{ minHeight: 40 }} disabled={searching}>
+          {searching ? <Loader2 size={15} className="spin" /> : 'Inspect'}
         </button>
       </form>
 
-      {hasSearched && searchedAgent && (
+      {error && (
+        <div className="alert" role="alert">
+          <span>{error}</span>
+        </div>
+      )}
+
+      {searchedAgent && (
         <article className={`specimen ${searchedAgent.is_active ? 'is-iso' : 'is-ok'}`}>
           <div className="cluster" style={{ justifyContent: 'space-between', gap: 16 }}>
             <div className="cluster" style={{ gap: 14 }}>
@@ -99,15 +143,28 @@ export function AgentHealthInspector({
                 </p>
               </div>
             </div>
-            {searchedAgent.is_active ? (
-              <button type="button" className="btn btn-ghost" onClick={() => onSelectAgentForAppeal(searchedAgent.target_agent)}>
-                File appeal
-              </button>
-            ) : (
-              <button type="button" className="btn btn-hemolysis" onClick={() => onSelectAgentForReport(searchedAgent.target_agent)}>
-                Report pathogen
-              </button>
-            )}
+            <div className="cluster" style={{ gap: 8 }}>
+              {showRecover && (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => void handleRecover(searchedAgent.target_agent)}
+                  disabled={recovering}
+                >
+                  {recovering ? <Loader2 size={14} className="spin" /> : <RotateCcw size={14} aria-hidden="true" />}
+                  Recover
+                </button>
+              )}
+              {searchedAgent.is_active ? (
+                <button type="button" className="btn btn-ghost" onClick={() => onSelectAgentForAppeal(searchedAgent.target_agent)}>
+                  File appeal
+                </button>
+              ) : (
+                <button type="button" className="btn btn-hemolysis" onClick={() => onSelectAgentForReport(searchedAgent.target_agent)}>
+                  Report pathogen
+                </button>
+              )}
+            </div>
           </div>
 
           <dl className="kv">
@@ -132,7 +189,7 @@ export function AgentHealthInspector({
             </div>
           </dl>
 
-          {searchedAgent.antibody_hash !== 'NONE' && (
+          {searchedAgent.antibody_hash !== 'NONE' && searchedAgent.antibody_hash !== '' && (
             <div className="hashbox">
               <div>
                 <div className="label">Linked antibody</div>
@@ -149,36 +206,42 @@ export function AgentHealthInspector({
           <span className="chip chip-iso">{active.length} isolated</span>
         </div>
         <div className="ledger-wrap">
-          <table className="ledger">
-            <thead>
-              <tr>
-                <th>Target</th>
-                <th>Tier</th>
-                <th>Report</th>
-                <th>Until</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {active.map((agent) => (
-                <tr key={agent.target_agent}>
-                  <td className="hash">{shortHex(agent.target_agent, 10, 6)}</td>
-                  <td>
-                    <span className={`chip ${agent.reason_tier === 'TIER_PATHOGEN_CRITICAL' ? 'chip-iso' : 'chip-warn'}`}>
-                      {tierLabel(agent.reason_tier)}
-                    </span>
-                  </td>
-                  <td className="hash">{agent.last_report_id}</td>
-                  <td>{formatIso(agent.quarantine_until_iso)}</td>
-                  <td>
-                    <button type="button" className="btn btn-ghost" style={{ minHeight: 36, fontSize: 12 }} onClick={() => handleQuickInspect(agent)}>
-                      Inspect
-                    </button>
-                  </td>
+          {active.length === 0 ? (
+            <p className="help" style={{ padding: '8px 2px' }}>
+              No agents are currently quarantined on-chain.
+            </p>
+          ) : (
+            <table className="ledger">
+              <thead>
+                <tr>
+                  <th>Target</th>
+                  <th>Tier</th>
+                  <th>Report</th>
+                  <th>Until</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {active.map((agent) => (
+                  <tr key={agent.target_agent}>
+                    <td className="hash">{shortHex(agent.target_agent, 10, 6)}</td>
+                    <td>
+                      <span className={`chip ${agent.reason_tier === 'TIER_PATHOGEN_CRITICAL' ? 'chip-iso' : 'chip-warn'}`}>
+                        {tierLabel(agent.reason_tier)}
+                      </span>
+                    </td>
+                    <td className="hash">{agent.last_report_id || '—'}</td>
+                    <td>{formatIso(agent.quarantine_until_iso)}</td>
+                    <td>
+                      <button type="button" className="btn btn-ghost" style={{ minHeight: 36, fontSize: 12 }} onClick={() => handleQuickInspect(agent)}>
+                        Inspect
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       </section>
     </div>
