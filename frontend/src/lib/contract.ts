@@ -5,7 +5,7 @@
 
 import { studionet } from 'genlayer-js/chains';
 
-export const PHAGE_CONTRACT_ADDRESS = '0x07A8d9e769019ccB49Ad2f8CE4e873ad7904D186';
+export const PHAGE_CONTRACT_ADDRESS = '0xf21E61613F10341a565B9c20298C64d3764A92CB';
 export const STUDIONET_RPC = 'https://studio-dev.genlayer.com/api';
 export const STUDIONET_CHAIN_ID = 61997;
 // 61997 == 0xf22d — the hex chainId MetaMask expects for wallet_switch/addEthereumChain.

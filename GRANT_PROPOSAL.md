@@ -6,7 +6,7 @@
 Project Name:        Phage (Phage Sentinel)
 Track:               Track 6: Autonomous Protocols & Agentic Infrastructure
 Target Network:      GenLayer (Studio-dev / Mainnet)
-Contract Address:    0x07A8d9e769019ccB49Ad2f8CE4e873ad7904D186
+Contract Address:    0xf21E61613F10341a565B9c20298C64d3764A92CB
 License:             MIT Open Source
 Repository:          https://github.com/moltaphet/phage
 ```
@@ -137,7 +137,7 @@ Phage is not a theoretical whitepaper; it is a **fully implemented, battle-teste
 
 ### 4.1 Production Deployment
 - **Network**: GenLayer Studio-dev (Chain ID: `61997`)
-- **Contract Address**: [`0x07A8d9e769019ccB49Ad2f8CE4e873ad7904D186`](https://explorer-studio-dev.genlayer.com/address/0x07A8d9e769019ccB49Ad2f8CE4e873ad7904D186) (deployment tx viewable on the Studio-dev explorer)
+- **Contract Address**: [`0xf21E61613F10341a565B9c20298C64d3764A92CB`](https://explorer-studio-dev.genlayer.com/address/0xf21E61613F10341a565B9c20298C64d3764A92CB) (deployment tx viewable on the Studio-dev explorer)
 - **Compiler / Runner**: Pinned GenVM v0.3.0 (`py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng`)
 
 ### 4.2 Comprehensive Test Suite
@@ -206,5 +206,5 @@ We are requesting a grant of **$45,000 (denominated in USD / equivalent $GEN)** 
 
 - **Smart Contract Code**: [`contracts/phage_sentinel.py`](https://github.com/moltaphet/phage/blob/main/contracts/phage_sentinel.py)
 - **Test Suite (42 tests)**: [`tests/direct/test_phage_sentinel.py`](https://github.com/moltaphet/phage/blob/main/tests/direct/test_phage_sentinel.py)
-- **Studio-dev Explorer**: [0x07A8d9e769019ccB49Ad2f8CE4e873ad7904D186](https://explorer-studio-dev.genlayer.com/address/0x07A8d9e769019ccB49Ad2f8CE4e873ad7904D186)
+- **Studio-dev Explorer**: [0xf21E61613F10341a565B9c20298C64d3764A92CB](https://explorer-studio-dev.genlayer.com/address/0xf21E61613F10341a565B9c20298C64d3764A92CB)
 - **Project Documentation**: [README.md](https://github.com/moltaphet/phage/blob/main/README.md)

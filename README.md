@@ -9,7 +9,7 @@ Network:         GenLayer Studio-dev
 Chain ID:        61997
 RPC:             https://studio-dev.genlayer.com/api
 Explorer:        https://explorer-studio-dev.genlayer.com
-Contract:        0x07A8d9e769019ccB49Ad2f8CE4e873ad7904D186
+Contract:        0xf21E61613F10341a565B9c20298C64d3764A92CB
 Pinned Runner:   py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng
 Verification:    Deployed & verified on-chain (Studio-dev); local 42-test suite needs the v0.3.0 gltest toolchain
 License:         MIT
