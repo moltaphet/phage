@@ -1230,3 +1230,62 @@ def test_critical_with_empty_bounty_pool_pays_zero_but_refunds_and_quarantines(
     assert overview["bounty_pool_atto"] == "0"
     # Solvency: only the refunded bond is outstanding as claimable
     assert int(overview["total_deposited_atto"]) == MIN_REPORTER_BOND
+
+
+# ---------------------------------------------------------------------------
+# 16. Address Validation Regression (host-decoder bypass)
+# ---------------------------------------------------------------------------
+# Before `_coerce_address`, a value of the right *shape* but invalid hex was rejected by
+# the host's argument decoder as an unhandled internal error, so callers saw an opaque
+# host failure instead of the contract's own guard. These pin the guard on both a write
+# and a view, and confirm no state or value moves on the rejected path.
+MALFORMED_ADDRESSES = [
+    "0x" + "z" * 40,                    # right length, non-hex
+    "0x" + "а" * 40,               # Cyrillic homoglyphs of 'a'
+    "0x1234",                           # right prefix, too short
+    "not-an-address",                   # no prefix at all
+    "",                                 # empty
+]
+
+
+@pytest.mark.parametrize("bad", MALFORMED_ADDRESSES)
+def test_report_pathogen_malformed_address_rejected(
+    direct_vm, direct_deploy, direct_alice, direct_bob, bad
+):
+    contract = direct_deploy(CONTRACT_PATH)
+    direct_vm.sender = direct_alice
+    direct_vm.value = MIN_REPORTER_BOND
+
+    with pytest.raises(Exception) as exc:
+        contract.report_pathogen("rep-bad-addr", bad, "AGENT_RPC", "trace-001")
+
+    assert "invalid target_agent" in str(exc.value)
+    # Rejected before any mutation: no report recorded, bond not retained.
+    with pytest.raises(Exception) as missing:
+        contract.get_report("rep-bad-addr")
+    assert "not found" in str(missing.value)
+    assert contract.get_registry_overview()["total_deposited_atto"] == "0"
+
+
+@pytest.mark.parametrize("bad", MALFORMED_ADDRESSES)
+def test_views_malformed_address_rejected(direct_vm, direct_deploy, bad):
+    contract = direct_deploy(CONTRACT_PATH)
+
+    for view in (
+        contract.is_quarantined,
+        contract.get_quarantine_info,
+        contract.get_defended_appeals_count,
+        contract.get_required_reporter_bond,
+    ):
+        with pytest.raises(Exception) as exc:
+            view(bad)
+        assert "invalid target_agent" in str(exc.value)
+
+
+@pytest.mark.parametrize("bad", MALFORMED_ADDRESSES)
+def test_get_claimable_balance_malformed_address_rejected(direct_vm, direct_deploy, bad):
+    contract = direct_deploy(CONTRACT_PATH)
+
+    with pytest.raises(Exception) as exc:
+        contract.get_claimable_balance(bad)
+    assert "invalid account" in str(exc.value)

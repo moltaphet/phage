@@ -244,7 +244,7 @@ class PhageSentinel(gl.contract.Contract):
                 f"{ERROR_EXPECTED} invalid trace_id format for platform {platform}"
             )
 
-        target_addr = Address(target_agent) if not isinstance(target_agent, Address) else target_agent
+        target_addr = _coerce_address(target_agent, "target_agent")
         target_hex = target_addr.as_hex
 
         # Cross-Wallet Deterministic Replay Protection checked upfront
@@ -427,7 +427,7 @@ class PhageSentinel(gl.contract.Contract):
         appeal_proof_trace_id: str,
         platform: str = PLATFORM_AGENT_RPC,
     ) -> None:
-        target_addr = Address(target_agent) if not isinstance(target_agent, Address) else target_agent
+        target_addr = _coerce_address(target_agent, "target_agent")
         target_hex = target_addr.as_hex
 
         if target_hex not in self.quarantines:
@@ -535,7 +535,7 @@ class PhageSentinel(gl.contract.Contract):
     # ------------------------------------------------------------------
     @gl.public.write
     def recover_agent(self, target_agent: Address) -> None:
-        target_addr = Address(target_agent) if not isinstance(target_agent, Address) else target_agent
+        target_addr = _coerce_address(target_agent, "target_agent")
         target_hex = target_addr.as_hex
         if target_hex not in self.quarantines:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} agent is not registered in quarantine registry")
@@ -637,8 +637,16 @@ class PhageSentinel(gl.contract.Contract):
             try:
                 web_res = gl.nondet.web.get(api_url)
             except Exception as exc:
+                # Must stay [TRANSIENT]: the exception text embeds a host-level message
+                # that differs between validators, and _handle_nondet_leader_error only
+                # tolerates divergent messages under the TRANSIENT prefix. An
+                # [EXTERNAL]/[EXPECTED] prefix requires byte-identical text and would
+                # fail consensus on every fetch failure. Naming the provider is what
+                # makes the message actionable -- three of the four templates point at
+                # hosts that do not resolve, so "retry later" alone is misleading.
                 raise gl.vm.UserError(
-                    f"{ERROR_TRANSIENT} telemetry fetch exception: {str(exc)[:80]}"
+                    f"{ERROR_TRANSIENT} telemetry provider "
+                    f"{_provider_host(api_url)} unreachable: {str(exc)[:80]}"
                 )
 
             status = getattr(web_res, "status", None)
@@ -744,8 +752,11 @@ class PhageSentinel(gl.contract.Contract):
             try:
                 web_res = gl.nondet.web.get(api_url)
             except Exception as exc:
+                # See the note in _run_pathogen_consensus: the prefix must stay
+                # [TRANSIENT] for validator messages to remain comparable.
                 raise gl.vm.UserError(
-                    f"{ERROR_TRANSIENT} appeal telemetry fetch exception: {str(exc)[:80]}"
+                    f"{ERROR_TRANSIENT} appeal telemetry provider "
+                    f"{_provider_host(api_url)} unreachable: {str(exc)[:80]}"
                 )
 
             status = getattr(web_res, "status", None)
@@ -835,7 +846,7 @@ class PhageSentinel(gl.contract.Contract):
     # ------------------------------------------------------------------
     @gl.public.view
     def is_quarantined(self, target_agent: Address) -> bool:
-        target_addr = Address(target_agent) if not isinstance(target_agent, Address) else target_agent
+        target_addr = _coerce_address(target_agent, "target_agent")
         target_hex = target_addr.as_hex
         if target_hex not in self.quarantines:
             return False
@@ -847,7 +858,7 @@ class PhageSentinel(gl.contract.Contract):
 
     @gl.public.view
     def get_quarantine_info(self, target_agent: Address) -> dict:
-        target_addr = Address(target_agent) if not isinstance(target_agent, Address) else target_agent
+        target_addr = _coerce_address(target_agent, "target_agent")
         target_hex = target_addr.as_hex
         if target_hex not in self.quarantines:
             return {
@@ -925,17 +936,17 @@ class PhageSentinel(gl.contract.Contract):
 
     @gl.public.view
     def get_claimable_balance(self, account: Address) -> str:
-        addr = Address(account) if not isinstance(account, Address) else account
+        addr = _coerce_address(account, "account")
         return str(_get_claimable(self.claimable_balances, addr.as_hex))
 
     @gl.public.view
     def get_defended_appeals_count(self, target_agent: Address) -> int:
-        target_addr = Address(target_agent) if not isinstance(target_agent, Address) else target_agent
+        target_addr = _coerce_address(target_agent, "target_agent")
         return int(self.defended_appeals.get(target_addr.as_hex, u256(0)))
 
     @gl.public.view
     def get_required_reporter_bond(self, target_agent: Address) -> str:
-        target_addr = Address(target_agent) if not isinstance(target_agent, Address) else target_agent
+        target_addr = _coerce_address(target_agent, "target_agent")
         return str(self._required_reporter_bond(target_addr.as_hex))
 
     @gl.public.view
@@ -1033,6 +1044,29 @@ def _validate_trace_id(platform: str, trace_id: str) -> bool:
         return 4 <= n <= 66 and all(c in _ALNUM_DASH_US for c in trace_id)
 
     return False
+
+
+def _coerce_address(value, label: str = "address") -> Address:
+    """Coerce a caller-supplied value to an Address, or fail with the contract's own guard.
+
+    Without this, a value of the right *shape* but invalid hex (``0x`` followed by 40
+    non-hex characters, including homoglyphs) is rejected by the host's argument decoder
+    as an unhandled internal error, so the caller sees an opaque host failure instead of a
+    deterministic ``[EXPECTED]`` message. The coercion happens here, before any state is
+    read or mutated, so no path that fails this check can move value or change storage.
+    """
+    if isinstance(value, Address):
+        return value
+    try:
+        return Address(value)
+    except Exception:
+        raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid {label}: {str(value)[:42]}")
+
+
+def _provider_host(api_url: str) -> str:
+    """The authority component of a platform URL, for naming a failing provider."""
+    parts = api_url.split("/")
+    return parts[2] if len(parts) > 2 and parts[2] else api_url
 
 
 def _build_platform_url(platform: str, trace_id: str) -> str:
