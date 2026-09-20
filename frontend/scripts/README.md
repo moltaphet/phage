@@ -17,14 +17,12 @@ real `src/lib/genlayer.ts` code rather than a reimplementation of it. It also
 needs `--experimental-strip-types`, since those modules are TypeScript.
 
 Both suites stay under the node's limit of **30 requests per minute** (the 31st
-comes back as `-32029` with a `retry_after_seconds` hint):
+comes back as `-32029` with a `retry_after_seconds` hint). Each one gates
+`fetch` through the same sliding 28-per-minute window rather than sleeping
+between cases, because the frontend helpers `contract-frontend-test.mjs` calls
+in Phase C issue several RPCs per call — per-case sleeping would still overrun.
 
-- `security-suite.mjs` sleeps 2.2s between cases.
-- `contract-frontend-test.mjs` gates `fetch` through a sliding 28-per-minute
-  window, because the frontend helpers it calls in Phase C issue several RPCs
-  each — per-case sleeping would still overrun.
-
-A full run therefore takes a few minutes. Wait at least a minute between
-consecutive runs: the limit is enforced per caller on the server, so a suite
-started while the previous run's window is still hot will fail on its first
-calls regardless of its own pacing.
+The window is what makes back-to-back runs safe: the counter lives in the
+server-side 60s window, not in the script, so a suite started while the previous
+run's requests are still inside it simply waits rather than failing. A full run
+takes roughly a minute per 28 requests.
