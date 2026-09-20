@@ -5,7 +5,15 @@
 
 import { studioDevnet } from 'genlayer-js/chains';
 
-export const PHAGE_CONTRACT_ADDRESS = '0xf21E61613F10341a565B9c20298C64d3764A92CB';
+// The verified studio-dev deployment. Overridable per environment so a redeploy is a
+// config change (Vercel env var) rather than a code change; the literal stays the
+// default so a missing variable can never silently point the app at nothing.
+//
+// `import.meta.env` is injected by Vite and is absent under plain Node, where the live
+// test suites in `scripts/` import this module directly — hence the optional chaining
+// rather than a bare property read.
+export const PHAGE_CONTRACT_ADDRESS =
+  import.meta.env?.VITE_PHAGE_CONTRACT_ADDRESS || '0xf21E61613F10341a565B9c20298C64d3764A92CB';
 export const STUDIONET_RPC = 'https://studio-dev.genlayer.com/api';
 export const STUDIONET_CHAIN_ID = 61997;
 // 61997 == 0xf22d — the hex chainId MetaMask expects for wallet_switch/addEthereumChain.

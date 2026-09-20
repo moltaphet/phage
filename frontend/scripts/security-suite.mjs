@@ -3,8 +3,8 @@
 // mutated, no funds move. A case PASSES when the contract refuses the attack
 // with its own [EXPECTED] guard, or when a read returns a bounded result.
 import { createClient } from 'genlayer-js';
-import { PHAGE_CONTRACT_ADDRESS, STUDIO_DEV_CHAIN, STUDIONET_RPC } from './src/lib/contract.ts';
-import { describeError } from './src/lib/errors.ts';
+import { PHAGE_CONTRACT_ADDRESS, STUDIO_DEV_CHAIN, STUDIONET_RPC } from '../src/lib/contract.ts';
+import { describeError } from '../src/lib/errors.ts';
 
 const A = PHAGE_CONTRACT_ADDRESS;
 const client = createClient({ chain: STUDIO_DEV_CHAIN, endpoint: STUDIONET_RPC });

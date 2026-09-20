@@ -10,6 +10,7 @@ Chain ID:        61997
 RPC:             https://studio-dev.genlayer.com/api
 Explorer:        https://explorer-studio-dev.genlayer.com
 Contract:        0xf21E61613F10341a565B9c20298C64d3764A92CB
+Owner:           0x1f9813eeB2de53134af5C824cA156CE82C4EB0fa
 Pinned Runner:   py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng
 Verification:    Deployed & verified on-chain (Studio-dev); local 42-test suite needs the v0.3.0 gltest toolchain
 License:         MIT
@@ -317,20 +318,39 @@ The direct runner loads the contract against its pinned runner
 
 ### 8.3 Deploy to GenLayer Studio-dev
 
-The constructor takes **no arguments**, so deployment needs only the contract path and RPC:
+The constructor takes **no arguments**, so deployment needs only the contract path — but
+studio-dev is *not* gasless, and the CLI cannot derive fees for it.
 
 ```bash
-# Optional: select the network preset
+# 1. Select the built-in network. Do NOT pass --rpc: for a built-in network that
+#    bypasses the chain's own config (chain id, consensus addresses, calldata
+#    encoding) and the deploy will not settle correctly.
 genlayer network set studio-dev
 
-# Deploy (Chain ID 61997)
-genlayer deploy --contract contracts/phage_sentinel.py --rpc https://studio-dev.genlayer.com/api
+# 2. Deploy with fees attached explicitly. Studio-dev sets no FeeManager, so the CLI
+#    has nothing to fall back on and reverts with FeeValueMustBeNonZero(1) without
+#    these. The node's own sim_getFeeConfig `defaultFees` is not usable verbatim —
+#    its executionBudgetPerRound sits on the floor and __init__ dies with
+#    `out_of receipt nondet_output`. Raise the timeunit allocations into the
+#    100–200s range and lift the execution budget, then attach the deposit:
+genlayer deploy --contract contracts/phage_sentinel.py \
+  --fees '{"distribution":{"leaderTimeunitsAllocation":"100","validatorTimeunitsAllocation":"200","appealRounds":"0","executionBudgetPerRound":"300000000000000","executionConsumed":"0","totalMessageFees":"0","rotations":["0"],"maxPriceGenPerTimeUnit":"2","storageFeeMaxGasPrice":"300000000","receiptFeeMaxGasPrice":"300000000"}}' \
+  --fee-value 500000000000000
 
-# Smoke-test the live contract
-genlayer call <DEPLOYED_ADDRESS> get_registry_overview --rpc https://studio-dev.genlayer.com/api
+# 3. Smoke-test the live contract (same rule: no --rpc).
+genlayer call 0xf21E61613F10341a565B9c20298C64d3764A92CB get_registry_overview
 ```
 
-Network parameters live in `.env` / `.env.example` (`GENLAYER_RPC_URL`, `GENLAYER_CHAIN_ID=61997`, `GENLAYER_EXPLORER_URL`) and `gltest.config.yaml`.
+Writes need the same treatment, derived per call rather than hardcoded. `genlayer write`
+cannot send value at all (`value: 0n` is hardcoded in the CLI), so payable methods —
+`fund_bounty_pool`, `report_pathogen`, `appeal_quarantine` — are unreachable from the CLI.
+The frontend derives each fee through `estimateTransactionFeesForWrite`; see
+[`frontend/src/lib/genlayer.ts`](frontend/src/lib/genlayer.ts).
+
+Network parameters live in `.env` / `.env.example` (`GENLAYER_RPC_URL`,
+`GENLAYER_CHAIN_ID=61997`, `GENLAYER_EXPLORER_URL`). `gltest.config.yaml` intentionally has
+no studio-dev entry — the Python SDK gltest resolves through ships no such chain, so the
+live suites run through the frontend's own genlayer-js v2 code path instead (see 9.3).
 
 ---
 
@@ -360,6 +380,30 @@ npm run lint       # oxlint
 
 To interact with the live contract, install MetaMask, click **Connect**, and approve the Studio-dev network prompt.
 
+The contract address is read from `VITE_PHAGE_CONTRACT_ADDRESS`, falling back to the verified
+studio-dev deployment hardcoded in [`frontend/src/lib/contract.ts`](frontend/src/lib/contract.ts).
+Every variable in `frontend/.env.example` is optional, so an empty environment is a working
+configuration; set the override (e.g. as a Vercel env var) to point a preview or production
+build at a different deployment without a code change.
+
+### 9.3 Live Verification Against Studio-dev
+
+Two suites exercise the deployed contract through the frontend's *own* client code — the same
+`genlayer-js` v2 path the dApp uses — rather than through gltest:
+
+```bash
+cd frontend
+node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs ./scripts/contract-frontend-test.mjs
+node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs ./scripts/security-suite.mjs
+```
+
+The first walks all 14 view methods and dry-runs all 8 writes; the second runs 50 adversarial
+cases (unauthorized withdrawal, `report_id` validation, platform allow-list, `trace_id`
+injection, malformed addresses, bond enforcement, state-machine guards, pagination bounds).
+Both pace themselves under the node's limit of **30 requests per minute** — exceeding it fails
+with error `-32029` and a `retry_after_seconds` hint. See
+[`frontend/scripts/README.md`](frontend/scripts/README.md).
+
 ---
 
 ## 10. Repository Layout
@@ -373,17 +417,21 @@ Phage/
 │       ├── conftest.py              # Fixtures + web/LLM mock helpers
 │       └── test_phage_sentinel.py   # 42-test direct-mode suite
 ├── frontend/                        # React 19 + Vite + TS dApp
+│   ├── scripts/                     # Live studio-dev suites (views, writes, security)
+│   ├── .env.example                 # Optional VITE_PHAGE_CONTRACT_ADDRESS override
 │   └── src/
 │       ├── lib/
 │       │   ├── contract.ts          # Network config + typed contract models
+│       │   ├── genlayer.ts          # Client, reads/writes, per-call fee derivation
+│       │   ├── errors.ts            # GenVM failure decoding for the UI
 │       │   ├── useWallet.ts         # EIP-1193 connect/disconnect hook
 │       │   └── format.ts
 │       ├── components/              # Dashboard, inspector, portal, appeal chamber…
 │       ├── types/ethereum.d.ts      # Minimal EIP-1193 provider typings
 │       └── App.tsx
-├── gltest.config.yaml               # Direct-runner / network config
+├── gltest.config.yaml               # Direct-runner network config (no studio-dev — see 8.3)
 ├── pytest.ini                       # Test discovery
-├── .env / .env.example              # RPC, chain id, explorer, deployer
+├── .env / .env.example              # RPC, chain id, explorer, contract + owner address
 └── README.md
 ```
 

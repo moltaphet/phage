@@ -8,3 +8,18 @@ networks:
     url: "http://127.0.0.1:4000/api"
   studionet:
     url: "https://studio.genlayer.com/api"
+
+# NOTE: there is deliberately no `studio-dev` network here, and adding one does not work.
+#
+# gltest resolves a network to a chain object through `chain_type`, which is restricted to
+# localnet / studionet / testnet_asimov / testnet_bradbury. The Python SDK (genlayer_py)
+# ships no studio-dev chain — its `studionet` is chain id 61999, while studio-dev is 61997
+# and runs the Consensus v0.6 release-candidate stack with a different `gen_call` calldata
+# encoding. A `studio-dev` entry would therefore either fail config validation outright
+# (custom networks require id + url + accounts + chain_type) or, with
+# `chain_type: studionet`, silently pair a 61999 chain identity with the 61997 RPC and fail
+# every call with `malformed_entry`.
+#
+# The Phage contract lives on studio-dev. Exercise it through the frontend's own code path —
+# `frontend/scripts/contract-frontend-test.mjs` and `frontend/scripts/security-suite.mjs`,
+# which use genlayer-js v2 and its built-in `studioDevnet` — rather than through gltest.

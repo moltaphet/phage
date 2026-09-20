@@ -7,6 +7,7 @@ Project Name:        Phage (Phage Sentinel)
 Track:               Track 6: Autonomous Protocols & Agentic Infrastructure
 Target Network:      GenLayer (Studio-dev / Mainnet)
 Contract Address:    0xf21E61613F10341a565B9c20298C64d3764A92CB
+Owner:               0x1f9813eeB2de53134af5C824cA156CE82C4EB0fa
 License:             MIT Open Source
 Repository:          https://github.com/moltaphet/phage
 ```
