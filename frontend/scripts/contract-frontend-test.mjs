@@ -6,27 +6,9 @@ import { createClient, isSuccessful } from 'genlayer-js';
 import { PHAGE_CONTRACT_ADDRESS, STUDIO_DEV_CHAIN, STUDIONET_RPC } from '../src/lib/contract.ts';
 import * as fe from '../src/lib/genlayer.ts';
 import { describeError } from '../src/lib/errors.ts';
+import { installRateLimit } from './pace.mjs';
 
-// The node caps callers at 30 requests/minute and answers the 31st with -32029. Gate
-// every HTTP request through a sliding window rather than sleeping between test cases:
-// the frontend helpers in Phase C issue several RPCs per call, so per-iteration pacing
-// would still overrun. 28 leaves headroom for a request already in flight.
-const WINDOW_MS = 60_000;
-const MAX_REQUESTS = 28;
-const sent = [];
-const realFetch = globalThis.fetch;
-globalThis.fetch = async (...args) => {
-  for (;;) {
-    const now = Date.now();
-    while (sent.length && now - sent[0] > WINDOW_MS) sent.shift();
-    if (sent.length < MAX_REQUESTS) {
-      sent.push(now);
-      break;
-    }
-    await new Promise((r) => setTimeout(r, sent[0] + WINDOW_MS - now + 50));
-  }
-  return realFetch(...args);
-};
+installRateLimit();
 
 const A = PHAGE_CONTRACT_ADDRESS;
 const ZERO = '0x0000000000000000000000000000000000000000';
