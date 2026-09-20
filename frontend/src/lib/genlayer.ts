@@ -277,11 +277,28 @@ type WriteArgs = {
 };
 
 async function write(client: GenClient, { functionName, args = [], value = 0n }: WriteArgs): Promise<string> {
+  // studio-dev sets no FeeManager, so genlayer-js has nothing to fall back on and
+  // every write reverts at submit with `FeeValueMustBeNonZero(1)`. The fee must be
+  // derived per call: `estimateTransactionFeesForWrite` simulates the call, prices
+  // an execution budget above the chain's current floor, and returns the deposit to
+  // attach. Deriving it per write rather than caching a constant keeps us correct if
+  // the node's fee policy moves under us.
+  const estimate = await client.estimateTransactionFeesForWrite({
+    address: ADDRESS,
+    functionName,
+    args,
+    value,
+  });
   const hash = await client.writeContract({
     address: ADDRESS,
     functionName,
     args,
     value,
+    fees: {
+      distribution: estimate.distribution,
+      messageAllocations: estimate.messageAllocations,
+      feeValue: estimate.feeValue,
+    },
   });
   return hash as string;
 }
