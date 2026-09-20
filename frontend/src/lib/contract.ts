@@ -3,7 +3,7 @@
 // and every action it takes is written to — this on-chain deployment. There is
 // no local simulation, seeded ledger, or fabricated consensus anywhere in the app.
 
-import { studionet } from 'genlayer-js/chains';
+import { studioDevnet } from 'genlayer-js/chains';
 
 export const PHAGE_CONTRACT_ADDRESS = '0xf21E61613F10341a565B9c20298C64d3764A92CB';
 export const STUDIONET_RPC = 'https://studio-dev.genlayer.com/api';
@@ -15,20 +15,14 @@ export const STUDIONET_EXPLORER = 'https://explorer-studio-dev.genlayer.com';
 export const STUDIO_WEB = 'https://studio-dev.genlayer.com';
 export const GEN_CURRENCY = { name: 'GenLayer', symbol: 'GEN', decimals: 18 } as const;
 
-// The genlayer-js `studionet` chain targets studio.genlayer.com (chain 61999). We
-// reuse its consensus/staking wiring but retarget the id, name, RPC, and explorer
-// at the studio-dev deployment the contract actually lives on. A fresh rpcUrls
-// object is critical: createClient mutates chain.rpcUrls.default.http when an
-// `endpoint` is supplied, and we must not clobber the shared studionet singleton.
-export const STUDIO_DEV_CHAIN = {
-  ...studionet,
-  id: STUDIONET_CHAIN_ID,
-  name: STUDIONET_CHAIN_NAME,
-  rpcUrls: { default: { http: [STUDIONET_RPC] } },
-  blockExplorers: {
-    default: { name: 'GenLayer Explorer', url: STUDIONET_EXPLORER },
-  },
-};
+// studio-dev runs the Consensus v0.6 release-candidate stack, which speaks a
+// different `gen_call` calldata encoding than the stable 61999 studionet. The
+// matching client ships this network as `studioDevnet`; consuming its definition
+// wholesale (rather than retargeting the stable `studionet` object) keeps chain
+// identity, consensus addresses, and encoding travelling together, as the v0.6
+// migration requires. Running a stable genlayer-js here fails every read with a
+// bare `execution failed` / `malformed_entry` from the node.
+export const STUDIO_DEV_CHAIN = studioDevnet;
 
 // Discrete threat tiers mirrored from the contract (contracts/phage_sentinel.py).
 export const TIER_PATHOGEN_CRITICAL = 'TIER_PATHOGEN_CRITICAL';

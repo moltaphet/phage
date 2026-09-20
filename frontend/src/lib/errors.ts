@@ -53,7 +53,15 @@ const CAUSE_LABELS: Record<string, string> = {
 // Turn any thrown value into one actionable sentence naming the real cause.
 export function describeError(err: unknown): string {
   if (err && typeof err === 'object') {
-    const record = err as { cause?: unknown; data?: unknown; details?: unknown; message?: unknown; shortMessage?: unknown };
+    const record = err as {
+      cause?: unknown;
+      data?: unknown;
+      details?: unknown;
+      message?: unknown;
+      shortMessage?: unknown;
+      result_name?: unknown;
+      txExecutionResultName?: unknown;
+    };
 
     const receipt = findReceipt(err);
     const payload = decodeGenvmPayload(receipt?.result);
@@ -63,6 +71,14 @@ export function describeError(err: unknown): string {
       return label
         ? `Contract execution failed — ${label} (${payload}).`
         : `Contract execution failed: ${payload}.`;
+    }
+
+    // A settled-but-failed transaction: consensus accepted it, execution did not.
+    const execution = typeof record.txExecutionResultName === 'string' ? record.txExecutionResultName : null;
+    if (execution && execution !== 'FINISHED_WITH_RETURN') {
+      const outcome = typeof record.result_name === 'string' ? ` (${record.result_name})` : '';
+      const detail = execution === 'FINISHED_WITH_ERROR' ? 'the contract call reverted' : 'execution did not complete';
+      return `Transaction ${execution}${outcome} — ${detail}.`;
     }
 
     // The RPC error's own `data.message` is descriptive when present; viem buries

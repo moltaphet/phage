@@ -7,7 +7,7 @@
 // contract. Nothing in this module fabricates state — a failed read throws, and a
 // failed/pending write surfaces its real transaction hash and receipt status.
 // -----------------------------------------------------------------------------
-import { createClient } from 'genlayer-js';
+import { createClient, isSuccessful } from 'genlayer-js';
 import type { Eip1193Provider } from '../types/ethereum';
 
 type Address = `0x${string}`;
@@ -26,6 +26,7 @@ import type {
   QuarantineInfo,
 } from './contract';
 import { attoToGen } from './format';
+import { describeError } from './errors';
 
 type GenClient = ReturnType<typeof createClient>;
 type CalldataArg = string | number | bigint | boolean;
@@ -327,18 +328,27 @@ export function withdraw(client: GenClient): Promise<string> {
   return write(client, { functionName: 'withdraw' });
 }
 
-// Await a GenLayer transaction receipt. Resolves once the transaction reaches the
-// ACCEPTED consensus status (the client default), throwing on failure. On-chain
-// LLM consensus (evaluate_pathogen / appeal_quarantine) can take a while, so we
-// poll patiently rather than fabricate an outcome.
+// Await a GenLayer transaction receipt. On-chain LLM consensus (evaluate_pathogen /
+// appeal_quarantine) can take a while, so we poll patiently rather than fabricate an
+// outcome.
+//
+// Reaching ACCEPTED is not the same as succeeding: a transaction that finalizes with
+// FINISHED_WITH_ERROR (a reverting call, a contract that failed to load) is still
+// "accepted" by consensus, so waiting on status alone would report a failed write as
+// a success. The v0.6 migration guide requires checking status *and* execution
+// together — `isSuccessful` does both, and we rethrow its verdict as a real error so
+// callers never read back stale state believing their write landed.
 type ReceiptHash = Parameters<GenClient['waitForTransactionReceipt']>[0]['hash'];
 
-export async function waitForReceipt(client: GenClient, hash: string): Promise<unknown> {
-  return client.waitForTransactionReceipt({
+export async function waitForReceipt(client: GenClient, hash: string): Promise<void> {
+  const tx = await client.waitForTransactionReceipt({
     hash: hash as unknown as ReceiptHash,
     interval: 4000,
     retries: 45,
   });
+  if (!isSuccessful(tx)) {
+    throw new Error(describeError(tx));
+  }
 }
 
 // Reconstruct the deterministic appeal id the contract assigns:
