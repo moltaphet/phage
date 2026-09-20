@@ -420,6 +420,28 @@ Both pace themselves under the node's limit of **30 requests per minute** — ex
 with error `-32029` and a `retry_after_seconds` hint. See
 [`frontend/scripts/README.md`](frontend/scripts/README.md).
 
+Both of those are **dry runs**: `simulateWriteContract` never reaches `run_nondet`, so neither
+proves the consensus engine runs — only that its guards hold. A third script does prove it, by
+escrowing a real bond and letting the tier decide the outcome:
+
+```bash
+GL_PK=$(security find-generic-password -s genlayer-cli -a account:<name> -w) \
+  node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs ./scripts/live-cycle.mjs
+```
+
+It has been run against this deployment. Report `live-cycle-1` (target `0x…dEaD`,
+`GITHUB_AUDIT`, trace `genlayerlabs/genlayer-js`) resolved **`TIER_BENIGN_NOISE`** on-chain: the
+LLM classified a real public repository as nominal traffic, the contract bound that tier to zero
+quarantine seconds and zero payout, and the 0.1 GEN bond was refunded intact to
+`claimable_balances`. No antibody was minted, which is correct — only `TIER_PATHOGEN_CRITICAL`
+mints one. The ledger balances: `total_deposited_atto` 0.1 GEN against 0.1 GEN claimable.
+
+Only `GITHUB_AUDIT` can complete a cycle. The other three telemetry hosts in
+`_PLATFORM_URL_TEMPLATES` do not resolve, so their `leader_fn` raises `[TRANSIENT]` and the
+evaluation reverts — see §7.2. The live cycle therefore proves the engine, the tier→payout
+binding, the replay guard and the settlement path; it does not exercise the quarantine or
+antibody branches, which need a `CRITICAL` verdict from a provider that exists.
+
 ### 9.4 Live Demo
 
 The dApp is deployed at **[phage-sentinel.vercel.app](https://phage-sentinel.vercel.app)** and
@@ -450,7 +472,7 @@ Phage/
 │       ├── conftest.py              # Fixtures + web/LLM mock helpers
 │       └── test_phage_sentinel.py   # 57-test direct-mode suite
 ├── frontend/                        # React 19 + Vite + TS dApp
-│   ├── scripts/                     # Live studio-dev suites (views, writes, security)
+│   ├── scripts/                     # Live studio-dev suites (views, writes, security, live cycle)
 │   ├── .env.example                 # Optional VITE_PHAGE_CONTRACT_ADDRESS override
 │   └── src/
 │       ├── lib/

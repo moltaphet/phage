@@ -145,6 +145,8 @@ Phage is not a theoretical whitepaper; it is a **fully implemented, battle-teste
 
 ### 4.2 Comprehensive Test Suite
 - **Direct Mode Test Suite**: 57 unit and regression tests (100% pass on a matching v0.3.0 GenVM toolchain).
+- **Live Consensus Run**: a real end-to-end cycle has executed on-chain against this deployment — report `live-cycle-1` (`GITHUB_AUDIT`, trace `genlayerlabs/genlayer-js`) resolved `TIER_BENIGN_NOISE` through multi-LLM consensus, with the tier bound to zero quarantine and zero payout and the 0.1 GEN bond refunded intact. This is the non-deterministic path running for real, not a simulation.
+- **Adversarial Suite**: 50 cases against the live deployment (unauthorized withdrawal, `report_id` / `trace_id` injection, platform allow-list, malformed addresses, bond enforcement, state-machine guards, pagination bounds) — all refused by the contract's own `[EXPECTED]` guards, 0 bypasses.
 - **Test Categories**:
   - Full pathogen lifecycle (Reporting $\to$ Evaluation $\to$ Quarantine $\to$ Antibody Minting $\to$ Bounties).
   - Multi-LLM prompt injection resilience and telemetry spoofing rejection.
