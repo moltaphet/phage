@@ -1,9 +1,7 @@
 # Live contract test scripts
 
-Read-only / dry-run suites that exercise the deployed PhageSentinel contract on
-GenLayer Studio-dev through the frontend's own client code. Neither spends funds
-or mutates state: `security-suite.mjs` uses `simulateWriteContract`, and
-`contract-frontend-test.mjs` uses `readContract` plus dry-run writes.
+Scripts that exercise the deployed PhageSentinel contract on GenLayer Studio-dev
+through the frontend's own client code.
 
 ```bash
 cd frontend
@@ -11,18 +9,52 @@ node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs ./scr
 node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs ./scripts/contract-frontend-test.mjs
 ```
 
+| Script | Spends? | What it does |
+| :--- | :--- | :--- |
+| `security-suite.mjs` | no | 50 adversarial cases via `simulateWriteContract` / `readContract` |
+| `contract-frontend-test.mjs` | no | every view method, every write dry-run, every exported read helper |
+| `live-cycle.mjs` | **yes — 0.1 GEN bond** | one real `report_pathogen` → `evaluate_pathogen` cycle |
+
 `ts-resolve*.mjs` is a small Node loader hook that lets these `.mjs` scripts
 import the frontend's TypeScript modules directly, so the tests exercise the
 real `src/lib/genlayer.ts` code rather than a reimplementation of it. It also
 needs `--experimental-strip-types`, since those modules are TypeScript.
 
-Both suites stay under the node's limit of **30 requests per minute** (the 31st
-comes back as `-32029` with a `retry_after_seconds` hint). Each one gates
-`fetch` through the same sliding 28-per-minute window rather than sleeping
-between cases, because the frontend helpers `contract-frontend-test.mjs` calls
-in Phase C issue several RPCs per call — per-case sleeping would still overrun.
+## The live cycle
 
-The window is what makes back-to-back runs safe: the counter lives in the
-server-side 60s window, not in the script, so a suite started while the previous
-run's requests are still inside it simply waits rather than failing. A full run
-takes roughly a minute per 28 requests.
+The two suites are dry runs: `simulateWriteContract` never reaches `run_nondet`,
+so neither one proves the consensus engine works — only that its guards hold.
+`live-cycle.mjs` is the script that does, by actually escrowing the bond and
+letting the resulting tier decide whether it is refunded, slashed, or paid out.
+
+It needs a signing key, which the suites do not. Pass it through the environment
+so it never lands in shell history or this file:
+
+```bash
+GL_PK=$(security find-generic-password -s genlayer-cli -a account:<name> -w) \
+  node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs \
+  ./scripts/live-cycle.mjs --dry     # drop --dry to spend
+```
+
+Only `GITHUB_AUDIT` can complete: the contract's other three telemetry hosts do
+not resolve, so their `leader_fn` always raises `[TRANSIENT]`. Defaults point at
+a burn address and a real public repo, so a run quarantines nobody real.
+
+## Rate limiting
+
+The node caps callers at **30 requests per minute** and answers the 31st with
+`-32029` plus a `retry_after_seconds` hint. `pace.mjs` gates `fetch` through a
+shared sliding window rather than sleeping between cases, because the frontend
+helpers issue several RPCs per call and per-case sleeping would still overrun.
+
+The window lives in a file under the temp directory, not in process memory. That
+matters: an in-memory counter only paces one script, so a second suite started
+while the first one's requests were still inside the *server's* 60s window would
+open with `-32029` and misreport those cases as failures — the guards expect a
+contract `[EXPECTED]` message and do not match "rate limit exceeded". Sharing
+the ledger makes back-to-back runs work, which is why there is no longer a
+"wait a minute between runs" rule. Delete the file to reset the window:
+
+```bash
+rm -f "${TMPDIR:-/tmp}/phage-studio-dev-rpc-window"
+```
