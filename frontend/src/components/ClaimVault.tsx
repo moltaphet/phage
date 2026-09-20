@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Coins, Loader2, RefreshCw } from 'lucide-react';
 import { getClaimableBalanceGen } from '../lib/genlayer';
+import { describeError } from '../lib/errors';
 import { shortHex } from '../lib/format';
 
 interface ClaimVaultProps {
@@ -27,7 +28,7 @@ export function ClaimVault({ address, walletConnected, refreshKey, onWithdraw }:
     try {
       setClaimable(await getClaimableBalanceGen(address));
     } catch (err) {
-      setError(err instanceof Error ? err.message.split('\n')[0] : 'Unable to read claimable balance.');
+      setError(describeError(err));
       setClaimable(null);
     } finally {
       setLoading(false);

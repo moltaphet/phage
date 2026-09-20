@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Clock, Loader2, RotateCcw, Search, ShieldAlert, ShieldCheck } from 'lucide-react';
 import type { QuarantineInfo } from '../lib/contract';
 import { inspectAgent } from '../lib/genlayer';
+import { describeError } from '../lib/errors';
 import { formatIso, shortHex, tierLabel } from '../lib/format';
 
 interface AgentHealthInspectorProps {
@@ -41,7 +42,7 @@ export function AgentHealthInspector({
       const info = await inspectAgent(address);
       setSearchedAgent(info);
     } catch (err) {
-      setError(err instanceof Error ? err.message.split('\n')[0] : 'On-chain lookup failed.');
+      setError(describeError(err));
       setSearchedAgent(null);
     } finally {
       setSearching(false);

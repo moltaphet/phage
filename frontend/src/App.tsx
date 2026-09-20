@@ -3,6 +3,7 @@ import { Activity, AlertTriangle, BookOpen, Dna, HelpCircle, RefreshCw, Scale, S
 import type { Antibody, AppealRecord, ProtocolStats, QuarantineInfo } from './lib/contract';
 import { STUDIONET_CHAIN_ID } from './lib/contract';
 import { attoToGen, genToAtto, shortHex } from './lib/format';
+import { describeError } from './lib/errors';
 import { useWallet } from './lib/useWallet';
 import {
   appealQuarantine,
@@ -60,16 +61,6 @@ const EMPTY_STATS: ProtocolStats = {
 const APPEAL_BOND_GEN = '0.20'; // APPEAL_BOND = 0.2 GEN, enforced on-chain.
 
 type Toast = { text: string; type: 'success' | 'info' | 'error'; href?: string };
-
-function describeError(err: unknown): string {
-  if (err && typeof err === 'object') {
-    const record = err as { shortMessage?: unknown; details?: unknown; message?: unknown };
-    if (typeof record.shortMessage === 'string') return record.shortMessage;
-    if (typeof record.details === 'string') return record.details;
-    if (typeof record.message === 'string') return record.message.split('\n')[0];
-  }
-  return 'Transaction failed.';
-}
 
 export function App() {
   const [activeTab, setActiveTab] = useState('sentinel');
