@@ -8,6 +8,7 @@ Track:               Track 6: Autonomous Protocols & Agentic Infrastructure
 Target Network:      GenLayer (Studio-dev / Mainnet)
 Contract Address:    0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80
 Owner:               0x1f9813eeB2de53134af5C824cA156CE82C4EB0fa
+Live Demo:           https://phage-sentinel.vercel.app
 License:             MIT Open Source
 Repository:          https://github.com/moltaphet/phage
 ```
@@ -139,6 +140,7 @@ Phage is not a theoretical whitepaper; it is a **fully implemented, battle-teste
 ### 4.1 Production Deployment
 - **Network**: GenLayer Studio-dev (Chain ID: `61997`)
 - **Contract Address**: [`0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80`](https://explorer-studio-dev.genlayer.com/address/0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80)
+- **Live Demo**: [phage-sentinel.vercel.app](https://phage-sentinel.vercel.app) — the dApp reads and writes this deployment directly; reads work with no wallet connected.
 - **Compiler / Runner**: Pinned GenVM v0.3.0 (`py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng`)
 
 ### 4.2 Comprehensive Test Suite

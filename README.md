@@ -11,6 +11,7 @@ RPC:             https://studio-dev.genlayer.com/api
 Explorer:        https://explorer-studio-dev.genlayer.com
 Contract:        0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80
 Owner:           0x1f9813eeB2de53134af5C824cA156CE82C4EB0fa
+Live Demo:       https://phage-sentinel.vercel.app
 Pinned Runner:   py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng
 Verification:    Deployed & verified on-chain (Studio-dev); 57/57 local direct tests pass on the pinned RC toolchain
 License:         MIT
@@ -317,7 +318,7 @@ uv pip install --python .venv/bin/python --prerelease=allow -r requirements.txt
 
 ```bash
 # from the repository root, using the project virtualenv
-.venv/bin/pytest tests/direct/ -v      # expect: 42 passed
+.venv/bin/pytest tests/direct/ -v      # expect: 57 passed
 ```
 
 The direct runner loads the contract against its pinned runner
@@ -419,6 +420,23 @@ Both pace themselves under the node's limit of **30 requests per minute** — ex
 with error `-32029` and a `retry_after_seconds` hint. See
 [`frontend/scripts/README.md`](frontend/scripts/README.md).
 
+### 9.4 Live Demo
+
+The dApp is deployed at **[phage-sentinel.vercel.app](https://phage-sentinel.vercel.app)** and
+talks to the studio-dev deployment above directly from the browser — reads need no wallet.
+Rebuild and redeploy with:
+
+```bash
+cd frontend
+vercel deploy --prod --yes     # project: moltaphets-projects/phage-sentinel
+```
+
+The contract address is baked into the bundle at build time from the fallback in
+`src/lib/contract.ts`, so a redeploy of the *contract* means rebuilding the frontend. Set
+`VITE_PHAGE_CONTRACT_ADDRESS` as a Vercel env var instead to make that a config change — the
+variable is optional and the fallback is the verified address, so an empty environment is
+still a working configuration.
+
 ---
 
 ## 10. Repository Layout
@@ -430,7 +448,7 @@ Phage/
 ├── tests/
 │   └── direct/
 │       ├── conftest.py              # Fixtures + web/LLM mock helpers
-│       └── test_phage_sentinel.py   # 42-test direct-mode suite
+│       └── test_phage_sentinel.py   # 57-test direct-mode suite
 ├── frontend/                        # React 19 + Vite + TS dApp
 │   ├── scripts/                     # Live studio-dev suites (views, writes, security)
 │   ├── .env.example                 # Optional VITE_PHAGE_CONTRACT_ADDRESS override
@@ -455,6 +473,6 @@ Phage/
 
 ## 11. Disclaimer & License
 
-Phage Sentinel is research-grade software provided **as-is** for the GenLayer ecosystem. It has not undergone a third-party security audit; the 42-test suite and the invariants documented above are the current verification baseline. Deploy to mainnet-equivalent environments at your own risk and after independent review.
+Phage Sentinel is research-grade software provided **as-is** for the GenLayer ecosystem. It has not undergone a third-party security audit; the 57-test suite and the invariants documented above are the current verification baseline. Deploy to mainnet-equivalent environments at your own risk and after independent review.
 
 Released under the **MIT License**.
