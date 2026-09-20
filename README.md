@@ -12,7 +12,7 @@ Explorer:        https://explorer-studio-dev.genlayer.com
 Contract:        0xf21E61613F10341a565B9c20298C64d3764A92CB
 Owner:           0x1f9813eeB2de53134af5C824cA156CE82C4EB0fa
 Pinned Runner:   py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng
-Verification:    Deployed & verified on-chain (Studio-dev); local 42-test suite needs the v0.3.0 gltest toolchain
+Verification:    Deployed & verified on-chain (Studio-dev); 42/42 local direct tests pass on the pinned RC toolchain
 License:         MIT
 ```
 
@@ -302,9 +302,16 @@ The invariant `Balance = Pool + Reserves + Claimable + Bonds` is preserved by co
 ### 8.1 Prerequisites
 
 - Python 3.12 (contract runtime & tests)
-- The GenLayer test toolchain (`genlayer-test`, provides the `gltest` direct runner)
 - Node.js 20+ and npm (frontend)
 - The `genlayer` CLI (`npm i -g genlayer`) for deployment
+
+Install the pinned Python toolchain. The matching toolchain for studio-dev is still on the
+release-candidate line, so `--prerelease=allow` is required:
+
+```bash
+uv venv .venv
+uv pip install --python .venv/bin/python --prerelease=allow -r requirements.txt
+```
 
 ### 8.2 Run the Contract Test Suite
 
@@ -315,6 +322,13 @@ The invariant `Balance = Pool + Reserves + Claimable + Bonds` is preserved by co
 
 The direct runner loads the contract against its pinned runner
 (`py-genlayer:5jyc…`), mocks web/LLM calls, and executes entirely in-memory.
+
+The versions in `requirements.txt` are load-bearing, not cosmetic. On the older stable
+toolchain (`genlayer-test 0.29.2` / `genlayer-py 0.16.3`) the direct runner extracts a
+`v0.2.16` SDK that reads its calldata from stdin at import time and dies under pytest with
+`DecodingError: unexpected end of memory` — all 42 tests fail before reaching the contract.
+`genlayer-py >= 0.19.0rc2` also ships the `studio_devnet` chain (id 61997) that
+`gltest.config.yaml` targets; on the older SDK it does not exist at all.
 
 ### 8.3 Deploy to GenLayer Studio-dev
 
@@ -348,9 +362,10 @@ The frontend derives each fee through `estimateTransactionFeesForWrite`; see
 [`frontend/src/lib/genlayer.ts`](frontend/src/lib/genlayer.ts).
 
 Network parameters live in `.env` / `.env.example` (`GENLAYER_RPC_URL`,
-`GENLAYER_CHAIN_ID=61997`, `GENLAYER_EXPLORER_URL`). `gltest.config.yaml` intentionally has
-no studio-dev entry — the Python SDK gltest resolves through ships no such chain, so the
-live suites run through the frontend's own genlayer-js v2 code path instead (see 9.3).
+`GENLAYER_CHAIN_ID=61997`, `GENLAYER_EXPLORER_URL`) and in `gltest.config.yaml`, which
+carries the matching `studio_devnet` entry. That entry needs the RC toolchain pinned in
+`requirements.txt` (`genlayer-py >= 0.19.0rc2`, installed with `--prerelease=allow`) — on the
+older stable SDK no studio-dev chain exists, so the network is unreachable from gltest.
 
 ---
 
@@ -429,7 +444,8 @@ Phage/
 │       ├── components/              # Dashboard, inspector, portal, appeal chamber…
 │       ├── types/ethereum.d.ts      # Minimal EIP-1193 provider typings
 │       └── App.tsx
-├── gltest.config.yaml               # Direct-runner network config (no studio-dev — see 8.3)
+├── gltest.config.yaml               # Direct-runner network config (incl. studio_devnet)
+├── requirements.txt                 # Pinned Python toolchain (RC line — see 8.1)
 ├── pytest.ini                       # Test discovery
 ├── .env / .env.example              # RPC, chain id, explorer, contract + owner address
 └── README.md

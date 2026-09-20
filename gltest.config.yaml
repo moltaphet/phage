@@ -6,20 +6,15 @@ networks:
   default: localnet
   localnet:
     url: "http://127.0.0.1:4000/api"
+  # GenLayer Studio-dev, chain 61997 — where the Phage contract is deployed.
+  studio_devnet:
+    url: "https://studio-dev.genlayer.com/api"
   studionet:
     url: "https://studio.genlayer.com/api"
 
-# NOTE: there is deliberately no `studio-dev` network here, and adding one does not work.
-#
-# gltest resolves a network to a chain object through `chain_type`, which is restricted to
-# localnet / studionet / testnet_asimov / testnet_bradbury. The Python SDK (genlayer_py)
-# ships no studio-dev chain — its `studionet` is chain id 61999, while studio-dev is 61997
-# and runs the Consensus v0.6 release-candidate stack with a different `gen_call` calldata
-# encoding. A `studio-dev` entry would therefore either fail config validation outright
-# (custom networks require id + url + accounts + chain_type) or, with
-# `chain_type: studionet`, silently pair a 61999 chain identity with the 61997 RPC and fail
-# every call with `malformed_entry`.
-#
-# The Phage contract lives on studio-dev. Exercise it through the frontend's own code path —
-# `frontend/scripts/contract-frontend-test.mjs` and `frontend/scripts/security-suite.mjs`,
-# which use genlayer-js v2 and its built-in `studioDevnet` — rather than through gltest.
+# NOTE: `studio_devnet` requires gltest >= 0.30.0rc2 / genlayer-py >= 0.19.0rc2. On the
+# older stable toolchain (gltest 0.29.2) the Python SDK ships no studio-dev chain at all —
+# its `studionet` is chain id 61999 — and `chain_type` is restricted to a fixed list, so a
+# studio-dev network is unreachable and calls fail with `malformed_entry`. The dependency
+# pins are recorded in requirements.txt; install with `--prerelease=allow`, since the
+# matching toolchain for studio-dev is still on the release-candidate line.

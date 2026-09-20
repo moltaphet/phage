@@ -1,0 +1,18 @@
+# Python dependencies for the contract test suite.
+#
+# Install with pre-releases enabled — the toolchain matching Studio-dev (chain 61997) is
+# still on the release-candidate line:
+#
+#   uv venv .venv
+#   uv pip install --python .venv/bin/python --prerelease=allow -r requirements.txt
+#
+# Why this pairing matters: the contract is a Consensus v0.6 contract, and studio-dev only
+# speaks v0.6. On the older stable toolchain (genlayer-test 0.29.2 / genlayer-py 0.16.3) the
+# direct runner extracts a v0.2.16 SDK that reads its calldata from stdin at import time and
+# dies under pytest with `DecodingError: unexpected end of memory` — all 42 tests fail before
+# reaching the contract. genlayer-py >= 0.19.0rc2 also ships `studio_devnet` (chain 61997),
+# which is what makes `gltest.config.yaml` able to target the deployed network at all.
+genlayer-test==0.30.0rc2
+genlayer-py==0.19.0rc2
+
+pytest==9.1.1
