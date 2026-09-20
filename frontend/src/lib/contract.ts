@@ -13,7 +13,7 @@ import { studioDevnet } from 'genlayer-js/chains';
 // test suites in `scripts/` import this module directly — hence the optional chaining
 // rather than a bare property read.
 export const PHAGE_CONTRACT_ADDRESS =
-  import.meta.env?.VITE_PHAGE_CONTRACT_ADDRESS || '0xf21E61613F10341a565B9c20298C64d3764A92CB';
+  import.meta.env?.VITE_PHAGE_CONTRACT_ADDRESS || '0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80';
 export const STUDIONET_RPC = 'https://studio-dev.genlayer.com/api';
 export const STUDIONET_CHAIN_ID = 61997;
 // 61997 == 0xf22d — the hex chainId MetaMask expects for wallet_switch/addEthereumChain.

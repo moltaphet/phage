@@ -6,7 +6,7 @@
 Project Name:        Phage (Phage Sentinel)
 Track:               Track 6: Autonomous Protocols & Agentic Infrastructure
 Target Network:      GenLayer (Studio-dev / Mainnet)
-Contract Address:    0xf21E61613F10341a565B9c20298C64d3764A92CB
+Contract Address:    0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80
 Owner:               0x1f9813eeB2de53134af5C824cA156CE82C4EB0fa
 License:             MIT Open Source
 Repository:          https://github.com/moltaphet/phage
@@ -138,11 +138,11 @@ Phage is not a theoretical whitepaper; it is a **fully implemented, battle-teste
 
 ### 4.1 Production Deployment
 - **Network**: GenLayer Studio-dev (Chain ID: `61997`)
-- **Contract Address**: [`0xf21E61613F10341a565B9c20298C64d3764A92CB`](https://explorer-studio-dev.genlayer.com/address/0xf21E61613F10341a565B9c20298C64d3764A92CB) (deployment tx viewable on the Studio-dev explorer)
+- **Contract Address**: [`0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80`](https://explorer-studio-dev.genlayer.com/address/0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80)
 - **Compiler / Runner**: Pinned GenVM v0.3.0 (`py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng`)
 
 ### 4.2 Comprehensive Test Suite
-- **Direct Mode Test Suite**: 42 unit and regression tests (100% pass on a matching v0.3.0 GenVM toolchain).
+- **Direct Mode Test Suite**: 57 unit and regression tests (100% pass on a matching v0.3.0 GenVM toolchain).
 - **Test Categories**:
   - Full pathogen lifecycle (Reporting $\to$ Evaluation $\to$ Quarantine $\to$ Antibody Minting $\to$ Bounties).
   - Multi-LLM prompt injection resilience and telemetry spoofing rejection.
@@ -206,6 +206,6 @@ We are requesting a grant of **$45,000 (denominated in USD / equivalent $GEN)** 
 ## 8. Project Links & Verification
 
 - **Smart Contract Code**: [`contracts/phage_sentinel.py`](https://github.com/moltaphet/phage/blob/main/contracts/phage_sentinel.py)
-- **Test Suite (42 tests)**: [`tests/direct/test_phage_sentinel.py`](https://github.com/moltaphet/phage/blob/main/tests/direct/test_phage_sentinel.py)
-- **Studio-dev Explorer**: [0xf21E61613F10341a565B9c20298C64d3764A92CB](https://explorer-studio-dev.genlayer.com/address/0xf21E61613F10341a565B9c20298C64d3764A92CB)
+- **Test Suite (57 tests)**: [`tests/direct/test_phage_sentinel.py`](https://github.com/moltaphet/phage/blob/main/tests/direct/test_phage_sentinel.py)
+- **Studio-dev Explorer**: [0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80](https://explorer-studio-dev.genlayer.com/address/0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80)
 - **Project Documentation**: [README.md](https://github.com/moltaphet/phage/blob/main/README.md)

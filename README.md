@@ -9,10 +9,10 @@ Network:         GenLayer Studio-dev
 Chain ID:        61997
 RPC:             https://studio-dev.genlayer.com/api
 Explorer:        https://explorer-studio-dev.genlayer.com
-Contract:        0xf21E61613F10341a565B9c20298C64d3764A92CB
+Contract:        0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80
 Owner:           0x1f9813eeB2de53134af5C824cA156CE82C4EB0fa
 Pinned Runner:   py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng
-Verification:    Deployed & verified on-chain (Studio-dev); 42/42 local direct tests pass on the pinned RC toolchain
+Verification:    Deployed & verified on-chain (Studio-dev); 57/57 local direct tests pass on the pinned RC toolchain
 License:         MIT
 ```
 
@@ -253,19 +253,19 @@ Evaluation and appeal arbitration both run through GenLayer's leader/validator m
 
 ## 7. Security & Audit Verification
 
-### 7.1 Test Suite — 42 direct-mode tests
+### 7.1 Test Suite — 57 direct-mode tests
 
-The direct-mode suite exercises every key path and adversarial edge case in-memory (no Docker, ~1s):
+The direct-mode suite exercises every key path and adversarial edge case in-memory (no Docker, ~90s):
 
 ```bash
 .venv/bin/pytest tests/direct/ -v
 # ...
-# 42 passed
+# 57 passed
 ```
 
-> **Toolchain note:** the live contract targets the v0.3.0 runner (`py-genlayer:5jyc…`) on Studio-dev and is verified on-chain. The 42-test suite validates the protocol logic and passes against a matching v0.3.0 `gltest` toolchain; the older `gltest 0.29.2` in this environment cannot load the v0.3.0 runner, so run the suite with the v0.3.0 toolchain (or an older-SDK build) to reproduce locally.
+> **Toolchain note:** the live contract targets the v0.3.0 runner (`py-genlayer:5jyc…`) on Studio-dev and is verified on-chain. The versions in `requirements.txt` are load-bearing — see §8.2 for why the RC line is the one that works.
 
-Coverage highlights: bounty funding, all-platform reporting & validation, fail-closed telemetry (`429/500`/empty), URL/injection rejection, tier→payout binding, adversarial slashing (fabricated + `404`), multi-cycle solvency, pull settlement, multi-wallet & cross-platform replay, appeal upheld/rejected, escalating bonds, bounty-farming cooldown & pool scaling, paginated views, quarantine expiry/recovery, antibody revocation, boolean anti-spoofing, bounded-liveness reclaim, and two audit regressions (solvency after a pre-appeal withdrawal, and a critical report against an empty pool).
+Coverage highlights: bounty funding, all-platform reporting & validation, fail-closed telemetry (`429/500`/empty), URL/injection rejection, tier→payout binding, adversarial slashing (fabricated + `404`), multi-cycle solvency, pull settlement, multi-wallet & cross-platform replay, appeal upheld/rejected, escalating bonds, bounty-farming cooldown & pool scaling, paginated views, quarantine expiry/recovery, antibody revocation, boolean anti-spoofing, bounded-liveness reclaim, and two audit regressions (solvency after a pre-appeal withdrawal, and a critical report against an empty pool), plus malformed-address rejection across every external-input entrypoint.
 
 ### 7.2 Protection Matrix
 
@@ -326,7 +326,7 @@ The direct runner loads the contract against its pinned runner
 The versions in `requirements.txt` are load-bearing, not cosmetic. On the older stable
 toolchain (`genlayer-test 0.29.2` / `genlayer-py 0.16.3`) the direct runner extracts a
 `v0.2.16` SDK that reads its calldata from stdin at import time and dies under pytest with
-`DecodingError: unexpected end of memory` — all 42 tests fail before reaching the contract.
+`DecodingError: unexpected end of memory` — all 57 tests fail before reaching the contract.
 `genlayer-py >= 0.19.0rc2` also ships the `studio_devnet` chain (id 61997) that
 `gltest.config.yaml` targets; on the older SDK it does not exist at all.
 
@@ -352,7 +352,7 @@ genlayer deploy --contract contracts/phage_sentinel.py \
   --fee-value 500000000000000
 
 # 3. Smoke-test the live contract (same rule: no --rpc).
-genlayer call 0xf21E61613F10341a565B9c20298C64d3764A92CB get_registry_overview
+genlayer call 0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80 get_registry_overview
 ```
 
 Writes need the same treatment, derived per call rather than hardcoded. `genlayer write`
