@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Info, Loader2, Lock, Send } from 'lucide-react';
 import { getRequiredReporterBondGen } from '../lib/genlayer';
+import { PLATFORM_IDENTIFIER_HINT, PLATFORM_LABELS, VALID_PLATFORMS } from '../lib/contract';
+import type { Platform } from '../lib/contract';
 
 interface PathogenReportingPortalProps {
   initialTarget: string;
@@ -16,6 +18,15 @@ interface PathogenReportingPortalProps {
 }
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/;
+// Kept in step with the contract's own `_validate_trace_id`, so anything the form
+// accepts the chain accepts too. The contract is still the authority — this only
+// turns a rejected transaction into an inline message.
+const TRACE_RE: Record<Platform, RegExp> = {
+  EVM_TX: TX_HASH_RE,
+  EVM_TX_BASE: TX_HASH_RE,
+  EVM_ADDRESS: ADDRESS_RE,
+};
 
 export function PathogenReportingPortal({
   initialTarget,
@@ -24,13 +35,20 @@ export function PathogenReportingPortal({
   onConnectWallet,
 }: PathogenReportingPortalProps) {
   const [targetAgent, setTargetAgent] = useState(initialTarget);
-  const [platform, setPlatform] = useState('AGENT_RPC');
+  const [platform, setPlatform] = useState<Platform>('EVM_TX');
   const [traceId, setTraceId] = useState('');
   const [category, setCategory] = useState('PROMPT_INJECTION');
   const [description, setDescription] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [requiredBond, setRequiredBond] = useState('0.10');
   const [bondLoading, setBondLoading] = useState(false);
+
+  // EVM_ADDRESS evidence *is* the target address, so the identifier field is not the
+  // user's to fill: the contract rejects the report unless the two match exactly. The
+  // value is derived during render rather than synced into state by an effect, so the
+  // two fields cannot drift apart for a frame.
+  const addressIsTheEvidence = platform === 'EVM_ADDRESS';
+  const evidenceId = addressIsTheEvidence ? targetAgent.trim() : traceId.trim();
 
   // Prefill when navigated here from the inspector with a target.
   useEffect(() => {
@@ -71,8 +89,12 @@ export function PathogenReportingPortal({
       setFormError('Enter a valid 40-character hexadecimal address (0x…).');
       return;
     }
-    if (!traceId.trim()) {
-      setFormError('A telemetry trace ID or transaction hash is required.');
+    if (!TRACE_RE[platform].test(evidenceId)) {
+      setFormError(
+        addressIsTheEvidence
+          ? 'EVM_ADDRESS evidence must be the target address itself — check the suspect address field.'
+          : 'Enter the 0x-prefixed 32-byte transaction hash the target is a party to.',
+      );
       return;
     }
     if (!description.trim() || description.trim().length < 15) {
@@ -82,7 +104,7 @@ export function PathogenReportingPortal({
     onSubmitReport({
       targetAgent: cleanAddress,
       platform,
-      traceId: traceId.trim(),
+      traceId: evidenceId,
       category,
       description: description.trim(),
     });
@@ -90,8 +112,10 @@ export function PathogenReportingPortal({
 
   const loadSample = () => {
     setTargetAgent('0x98522e861a29E10f36f9037323B06927d7E41C70');
-    setPlatform('AGENT_RPC');
-    setTraceId('rpc-sec-payload-unauthorized-exec-call-99');
+    setPlatform('EVM_TX');
+    // A real mainnet transaction hash, so the sample is one the contract can fetch
+    // and check for the target's participation rather than an illustrative string.
+    setTraceId('0x8c1e0f3d9a5b7c4e2f6a8d0b1c3e5f7092a4b6d8e0f2a4c6b8d0e2f4a6c8b0d2');
     setCategory('REENTRANCY_DRAIN');
     setDescription('Autonomous agent attempted recursive re-entrancy siphon on liquidity pool router during flash-loan settlement window.');
   };
@@ -136,26 +160,45 @@ export function PathogenReportingPortal({
             <label className="label" htmlFor="platform">
               Telemetry origin <span className="req">*</span>
             </label>
-            <select id="platform" className="select" value={platform} onChange={(e) => setPlatform(e.target.value)}>
-              <option value="AGENT_RPC">AGENT_RPC — JSON-RPC call log</option>
-              <option value="TX_TRACE">TX_TRACE — on-chain execution</option>
-              <option value="SECURITY_FEED">SECURITY_FEED — watchdog alert</option>
-              <option value="GITHUB_AUDIT">GITHUB_AUDIT — repository commit</option>
+            <select
+              id="platform"
+              className="select"
+              value={platform}
+              onChange={(e) => setPlatform(e.target.value as Platform)}
+            >
+              {VALID_PLATFORMS.map((p) => (
+                <option key={p} value={p}>
+                  {PLATFORM_LABELS[p]}
+                </option>
+              ))}
             </select>
-            <p className="help">Where validators should fetch and verify the incident.</p>
+            <p className="help">
+              Where validators fetch the incident. Each source is checked against the target
+              before it is read, so evidence that does not name the suspect is rejected.
+            </p>
           </div>
           <div className="field">
             <label className="label" htmlFor="trace">
-              Trace ID / payload hash <span className="req">*</span>
+              {addressIsTheEvidence ? 'Evidence address' : 'Transaction hash'}{' '}
+              <span className="req">*</span>
             </label>
             <input
               id="trace"
               className="input mono"
-              value={traceId}
+              value={evidenceId}
               onChange={(e) => setTraceId(e.target.value)}
-              placeholder="rpc-payload-prompt-hijack-v3"
+              placeholder={
+                addressIsTheEvidence
+                  ? '0x71C87050f443831F9Ac9B69B132b35a7455d5b7a'
+                  : '0x8c1e0f3d9a5b7c4e2f6a8d0b1c3e5f7092a4b6d8e0f2a4c6b8d0e2f4a6c8b0d2'
+              }
+              readOnly={addressIsTheEvidence}
+              aria-describedby="trace-help"
             />
-            <p className="help">Deterministic identifier used to fetch web telemetry.</p>
+            <p className="help" id="trace-help">
+              {PLATFORM_IDENTIFIER_HINT[platform]}. Validators fetch this record and the
+              contract confirms it concerns the suspect before any verdict is reached.
+            </p>
           </div>
           <div className="field">
             <label className="label" htmlFor="category">

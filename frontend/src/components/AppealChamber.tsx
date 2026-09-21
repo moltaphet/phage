@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, Loader2, Lock, Send } from 'lucide-react';
-import type { AppealRecord, QuarantineInfo } from '../lib/contract';
+import type { AppealRecord, Platform, QuarantineInfo } from '../lib/contract';
+import { PLATFORM_IDENTIFIER_HINT, PLATFORM_LABELS, VALID_PLATFORMS } from '../lib/contract';
 import { formatIso, shortHex, tierLabel } from '../lib/format';
 
 interface AppealChamberProps {
@@ -18,6 +19,15 @@ interface AppealChamberProps {
 }
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/;
+// Mirrors the contract's `_validate_trace_id`. The evidence must also *name* the
+// quarantined agent — an appeal citing a record about someone else is rejected, so
+// the form says so before the user pays the bond.
+const TRACE_RE: Record<Platform, RegExp> = {
+  EVM_TX: TX_HASH_RE,
+  EVM_TX_BASE: TX_HASH_RE,
+  EVM_ADDRESS: ADDRESS_RE,
+};
 
 export function AppealChamber({
   quarantinedAgents,
@@ -29,7 +39,7 @@ export function AppealChamber({
 }: AppealChamberProps) {
   const [selectedAgent, setSelectedAgent] = useState(initialTarget);
   const [proofTraceId, setProofTraceId] = useState('');
-  const [platform, setPlatform] = useState('GITHUB_AUDIT');
+  const [platform, setPlatform] = useState<Platform>('EVM_TX');
   const [reason, setReason] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -48,8 +58,12 @@ export function AppealChamber({
       setErrorMsg('Select or enter a valid 40-character target agent address.');
       return;
     }
-    if (!proofTraceId.trim()) {
-      setErrorMsg('A counter-evidence trace ID or patch commit is required.');
+    if (!TRACE_RE[platform].test(proofTraceId.trim())) {
+      setErrorMsg(
+        platform === 'EVM_ADDRESS'
+          ? 'EVM_ADDRESS counter-evidence must be the quarantined agent address itself.'
+          : 'Enter the 0x-prefixed 32-byte transaction hash the agent is a party to.',
+      );
       return;
     }
     if (!reason.trim() || reason.trim().length < 15) {
@@ -125,26 +139,41 @@ export function AppealChamber({
               <label className="label" htmlFor="appeal-platform">
                 Counter-proof platform <span className="req">*</span>
               </label>
-              <select id="appeal-platform" className="select" value={platform} onChange={(e) => setPlatform(e.target.value)}>
-                <option value="GITHUB_AUDIT">GITHUB_AUDIT — verified patch</option>
-                <option value="AGENT_RPC">AGENT_RPC — sanitized log</option>
-                <option value="TX_TRACE">TX_TRACE — state proof</option>
-                <option value="SECURITY_FEED">SECURITY_FEED — whitehat retraction</option>
+              <select
+                id="appeal-platform"
+                className="select"
+                value={platform}
+                onChange={(e) => setPlatform(e.target.value as Platform)}
+              >
+                {VALID_PLATFORMS.map((p) => (
+                  <option key={p} value={p}>
+                    {PLATFORM_LABELS[p]}
+                  </option>
+                ))}
               </select>
+              <p className="help">
+                The proof is checked against the agent you are appealing for. Records about a
+                different address are rejected and forfeit the bond.
+              </p>
             </div>
           </div>
 
           <div className="field">
             <label className="label" htmlFor="proof">
-              Remediation commit / trace ID <span className="req">*</span>
+              Counter-evidence identifier <span className="req">*</span>
             </label>
             <input
               id="proof"
               className="input mono"
               value={proofTraceId}
               onChange={(e) => setProofTraceId(e.target.value)}
-              placeholder="org/repo/commit-9f38c1a"
+              placeholder={
+                platform === 'EVM_ADDRESS'
+                  ? '0x71C87050f443831F9Ac9B69B132b35a7455d5b7a'
+                  : '0x8c1e0f3d9a5b7c4e2f6a8d0b1c3e5f7092a4b6d8e0f2a4c6b8d0e2f4a6c8b0d2'
+              }
             />
+            <p className="help">{PLATFORM_IDENTIFIER_HINT[platform]}.</p>
           </div>
 
           <div className="field">

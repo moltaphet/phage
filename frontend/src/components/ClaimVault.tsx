@@ -93,7 +93,9 @@ export function ClaimVault({ address, walletConnected, refreshKey, onWithdraw }:
       </div>
       <p className="help" style={{ marginTop: 10 }}>
         Withdrawals settle on <span className="mono">finalized</span> consensus via the contract's pull-payment
-        pattern, so slashed evaluations can never leak value out of escrow.
+        pattern. Bonds and bounties won on a <em>quarantine</em> verdict do not land here straight away — the
+        contract holds them in escrow for the length of the appeal window, so a disputed payout can still be
+        slashed if the appeal succeeds. Once that window closes the escrow is released to your claimable balance.
       </p>
     </section>
   );

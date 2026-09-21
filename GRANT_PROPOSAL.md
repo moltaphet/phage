@@ -84,13 +84,15 @@ Phage combines biomimetic immunology with rigorous GenVM decentralized state mac
         v                                v                               v
 [TIER_FABRICATED_ATTACK]      [TIER_SUSPICIOUS_ANOMALY]       [TIER_PATHOGEN_CRITICAL]
   * 100% Reporter Bond Slashed  * 24-Hour Quarantine Hold       * 7-Day / Permanent Quarantine
-  * Sent to Reserves            * 0 GEN Bounty Allocated        * 100% Bounty Released
+  * Sent to Reserves            * 0 GEN Bounty Allocated        * Bond + Bounty -> ESCROW
   * Zero Quarantine Applied     * Reporter Bond Refunded        * Global Antibody Minted
-                                                                         |
+                                * No Escrow Opened                       |
                                                                          v
                                                        +----------------------------------+
                                                        |         QUARANTINE STATE         |
                                                        | is_quarantined(target) == True   |
+                                                       | disputed value held in ESCROW,   |
+                                                       | locked for the appeal window     |
                                                        +----------------------------------+
                                                                          |
                                                    appeal_quarantine(bond = 0.2 GEN)
@@ -99,6 +101,7 @@ Phage combines biomimetic immunology with rigorous GenVM decentralized state mac
                                                        +----------------------------------+
                                                        |     APPEAL CONSENSUS ARBITER     |
                                                        |  Multi-LLM Telemetry Verification|
+                                                       |  (proof must bind to the target) |
                                                        +----------------------------------+
                                                                          |
                                         +--------------------------------+--------------------------------+
@@ -107,10 +110,21 @@ Phage combines biomimetic immunology with rigorous GenVM decentralized state mac
                                 [APPEAL UPHELD]                                                   [APPEAL REJECTED]
                      * Quarantine Lifted Instantly                                     * 100% Appeal Bond Slashed
                      * Appeal Bond Refunded to Appellant                               * Transferred to Reserves
-                     * Malicious Reporter Slashed (Bond+Payout)                        * Quarantine Remains Active
-                     * Leaked Bounty Restored to Pool                                  * Defense Counter Unchanged
-                     * Antibody Revoked (is_active = False)
-                     * Target Defended Appeals Incremented
+                     * ESCROW SLASHED (the penalty lands in full,                       * Quarantine Remains Active
+                       because the value was never withdrawable)                       * ESCROW RELEASED to Reporter
+                     * Reporter Bond -> Reserves, Bounty -> Pool                         (they need not wait out
+                     * Antibody Revoked (is_active = False)                               the remaining quarantine)
+                     * Target Defended Appeals Incremented                             * Defense Counter Unchanged
+                                        |                                                                 |
+                                        +--------------------------------+--------------------------------+
+                                                                         |
+                                                            no appeal filed, window elapses
+                                                                         v
+                                                       +----------------------------------+
+                                                       |  release_escrow(report_id)       |
+                                                       |  permissionless; pays only the   |
+                                                       |  recorded reporter               |
+                                                       +----------------------------------+
 ```
 
 ### 3.1 Core Innovations
@@ -118,18 +132,54 @@ Phage combines biomimetic immunology with rigorous GenVM decentralized state mac
 2. **Defensive Prompt Sandboxing**: Telemetry payloads are strictly encapsulated within `<untrusted_input>` XML tags with pre-quantized telemetry indicators (`CRITICAL_PATHOGEN_INDICATED`, `SUSPICIOUS_ANOMALY_INDICATED`, `BENIGN_NOMINAL_INDICATED`), making adversarial jailbreaks mathematically impossible.
 3. **Escalating Anti-Griefing Bonds**: To prevent malicious actors from repeatedly grieving legitimate competitor agents, each successfully defended appeal dynamically scales future required reporter bonds:
    $$\text{Required Bond} = \text{MIN\_REPORTER\_BOND} \times (1 + \text{defended\_appeals})$$
-4. **Conservation of Value Accounting**: Double-entry bookkeeping guarantees absolute solvency across all deposits, active bounties, reserves, pending bonds, and claimable balances.
+4. **Conservation of Value Accounting**: Double-entry bookkeeping guarantees absolute solvency across all deposits, active bounties, reserves, pending bonds, claimable balances, and escrowed disputed payouts.
 5. **Composable Protocol Inoculation**: External DeFi protocols simply import `IPhageSentinel` and apply the `onlyHealthyAgent(target)` modifier, gaining instant, automated protection against compromised counterparties.
+6. **Deterministic Evidence Binding**: Every report and appeal cites an identifier the contract itself resolves to a participant set or an address, and checks against the accused *before* the model is consulted — so an unbound payload cannot reach a verdict at all.
 
-### 3.2 Optimistic Payout Dynamics & Post-Finalization Appeal Trade-off
+### 3.2 Escrowed Disputed Payouts & Evidence Binding
 
-Phage is transparent about a known, bounded economic trade-off in its current settlement model.
+**Evidence binds to the target before any model sees it.** A report cites one of three
+telemetry sources, each of which resolves to a live public indexer and carries an
+identifier the contract checks deterministically against the accused agent:
 
-**Current mechanism.** Withdrawals (`withdraw()`) are emitted under GenVM `on="finalized"` guarantees, so a bounty can only leave the contract after its evaluation reaches consensus finality. An evaluation that is appealed and slashed within that finalization window cannot leak value.
+| Platform | Source | Binding check |
+| :--- | :--- | :--- |
+| `EVM_TX` | `eth.blockscout.com` | The target must appear in the transaction's participant set (`from`, `to`, or `created_contract`). |
+| `EVM_TX_BASE` | `base.blockscout.com` | Same, on Base. |
+| `EVM_ADDRESS` | `eth.blockscout.com` | The evidence identifier *is* the target address; the contract requires the two to match exactly. |
 
-**Residual edge case.** The appeal claw-back can only slash funds still held in the reporter's on-chain claimable balance (`slash_amount = min(current_claimable, bond + payout)`). If a malicious reporter withdraws their bounty immediately after finalization and the defendant subsequently wins an appeal, there is nothing left to claw back, and the paid bounty is not restored to the pool — funds are effectively leaked from the protocol's bounty escrow. Crucially, the protocol's global solvency invariant is never violated (the withdrawn amount stays fully accounted for in `total_claimed`); the impact is a depleted bounty pool, not insolvency. The edge case is explicitly pinned by the regression test `test_solvency_preserved_when_reporter_withdrew_before_appeal`.
+This check runs in the contract, before `gl.nondet.exec_prompt` is reached. A payload that
+does not implicate the accused returns `TIER_FABRICATED_ATTACK` and slashes the reporter's
+bond — it never becomes an input to the model. Determinism is the point: a prompt
+instruction is advice to a model, whereas this is a guarantee enforced on the validator's
+own copy of the data, so every validator reaches the same conclusion from the same bytes.
+The same gate applies to appeal proofs, so an appellant cannot win with records about some
+unrelated agent.
 
-**Roadmap solution (Phage v2 — Timelock Challenge Window).** A configurable **24–48 hour Challenge Window** will route verified bounties into a `queued_payouts` state before they become `claimable_balances`. Payouts mature into withdrawable balances only after the window elapses with no successful appeal, fully eliminating the front-running withdrawal edge case while retaining the existing finalized-settlement guarantees. (Scoped under Milestone 1 — Production Hardening.)
+**Disputed payouts are escrowed, not paid.** A verdict that quarantines a target credits
+the reporter nothing immediately. Instead the contract opens an `EscrowRecord` holding the
+reporter's bond and the bounty, locked for the length of the quarantine — which is exactly
+the appeal window, since `appeal_quarantine` requires an active quarantine. The disputed
+value is therefore never in the reporter's hands while the appeal can still reverse it:
+
+- **Appeal upheld** (quarantine overturned) → the appellant's bond is refunded, the
+  quarantine and antibody are revoked, and the escrow is slashed: the leaked bounty
+  returns to the pool it came from and the malicious reporter's own bond is forfeit to
+  reserves. The penalty is enforced in full, because the value was never withdrawable.
+- **Appeal rejected** → the appellant's bond is forfeit to reserves, the quarantine
+  stands, and the escrow is released to the reporter immediately rather than making them
+  wait out the remaining quarantine.
+- **No appeal** → `release_escrow(report_id)` becomes callable once the window elapses.
+  It is permissionless by design: the only address it can ever pay is the reporter
+  recorded in the escrow, so anyone may trigger it and the funds cannot be stranded on an
+  inactive reporter.
+
+This closes the front-running hole in the earlier optimistic-payout model, where a
+reporter could withdraw a bounty immediately after finalization and leave nothing for an
+appeal to claw back. It is pinned by `test_reporter_cannot_escape_appeal_penalty_by_withdrawing_first`
+and `test_escrow_accounting_keeps_solvency_across_both_outcomes`, and exposed on-chain via
+`get_escrow` and the `locked_escrow_atto` field of the registry overview. The protocol's
+conservation-of-value invariant now accounts for escrowed value as a first-class bucket.
 
 ---
 
@@ -144,16 +194,17 @@ Phage is not a theoretical whitepaper; it is a **fully implemented, battle-teste
 - **Compiler / Runner**: Pinned GenVM v0.3.0 (`py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng`)
 
 ### 4.2 Comprehensive Test Suite
-- **Direct Mode Test Suite**: 57 unit and regression tests (100% pass on a matching v0.3.0 GenVM toolchain).
-- **Live Consensus Run**: a real end-to-end cycle has executed on-chain against this deployment — report `live-cycle-1` (`GITHUB_AUDIT`, trace `genlayerlabs/genlayer-js`) resolved `TIER_BENIGN_NOISE` through multi-LLM consensus, with the tier bound to zero quarantine and zero payout and the 0.1 GEN bond refunded intact. This is the non-deterministic path running for real, not a simulation.
-- **Adversarial Suite**: 50 cases against the live deployment (unauthorized withdrawal, `report_id` / `trace_id` injection, platform allow-list, malformed addresses, bond enforcement, state-machine guards, pagination bounds) — all refused by the contract's own `[EXPECTED]` guards, 0 bypasses.
+- **Direct Mode Test Suite**: 66 unit and regression tests (100% pass on a matching v0.3.0 GenVM toolchain).
+- **Live Consensus Run**: a real end-to-end cycle has executed on-chain — report `live-cycle-1` resolved `TIER_BENIGN_NOISE` through multi-LLM consensus, with the tier bound to zero quarantine and zero payout and the 0.1 GEN bond refunded intact. This is the non-deterministic path running for real, not a simulation. The run was performed against the pre-remediation deployment (`GITHUB_AUDIT`); the telemetry platform set has since been replaced, and the cycle is re-run against each new deployment.
+- **Adversarial Suite**: 60 cases against the live deployment (unauthorized withdrawal, `report_id` / evidence-identifier injection, platform allow-list, malformed addresses, evidence-to-target binding, escrow release guards, bond enforcement, state-machine guards, pagination bounds) — all refused by the contract's own `[EXPECTED]` guards, 0 bypasses.
 - **Test Categories**:
   - Full pathogen lifecycle (Reporting $\to$ Evaluation $\to$ Quarantine $\to$ Antibody Minting $\to$ Bounties).
   - Multi-LLM prompt injection resilience and telemetry spoofing rejection.
   - Pending replay race condition prevention and platform-scoped digest validation.
   - Appeal arbitration, bond slashing, bounty restitution, and antibody revocation.
+  - Evidence-to-target binding (unbound transaction and address records rejected) and escrow locking across both appeal outcomes.
   - Mathematical balance conservation across high-volume stress cycles.
-- **Static Analysis**: 100% pass rate on `genvm-lint` with 0 warnings/errors across 22 contract methods (14 view, 8 write).
+- **Static Analysis**: 100% pass rate on `genvm-lint` with 0 warnings/errors across 24 contract methods (15 view, 9 write).
 
 ---
 
@@ -210,6 +261,6 @@ We are requesting a grant of **$45,000 (denominated in USD / equivalent $GEN)** 
 ## 8. Project Links & Verification
 
 - **Smart Contract Code**: [`contracts/phage_sentinel.py`](https://github.com/moltaphet/phage/blob/main/contracts/phage_sentinel.py)
-- **Test Suite (57 tests)**: [`tests/direct/test_phage_sentinel.py`](https://github.com/moltaphet/phage/blob/main/tests/direct/test_phage_sentinel.py)
+- **Test Suite (66 tests)**: [`tests/direct/test_phage_sentinel.py`](https://github.com/moltaphet/phage/blob/main/tests/direct/test_phage_sentinel.py)
 - **Studio-dev Explorer**: [0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80](https://explorer-studio-dev.genlayer.com/address/0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80)
 - **Project Documentation**: [README.md](https://github.com/moltaphet/phage/blob/main/README.md)

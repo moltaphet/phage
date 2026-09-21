@@ -51,6 +51,8 @@ const EMPTY_STATS: ProtocolStats = {
   protocol_reserves_gen: '0.0000',
   total_deposited_gen: '0.0000',
   total_claimed_gen: '0.0000',
+  locked_escrow_gen: '0.0000',
+  total_escrows: 0,
   total_quarantines_active: 0,
   total_antibodies_minted: 0,
   total_reports_evaluated: 0,

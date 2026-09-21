@@ -11,7 +11,7 @@ node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs ./scr
 
 | Script | Spends? | What it does |
 | :--- | :--- | :--- |
-| `security-suite.mjs` | no | 50 adversarial cases via `simulateWriteContract` / `readContract` |
+| `security-suite.mjs` | no | 60 adversarial cases via `simulateWriteContract` / `readContract` |
 | `contract-frontend-test.mjs` | no | every view method, every write dry-run, every exported read helper |
 | `live-cycle.mjs` | **yes — 0.1 GEN bond** | one real `report_pathogen` → `evaluate_pathogen` cycle |
 
@@ -36,9 +36,17 @@ GL_PK=$(security find-generic-password -s genlayer-cli -a account:<name> -w) \
   ./scripts/live-cycle.mjs --dry     # drop --dry to spend
 ```
 
-Only `GITHUB_AUDIT` can complete: the contract's other three telemetry hosts do
-not resolve, so their `leader_fn` always raises `[TRANSIENT]`. Defaults point at
-a burn address and a real public repo, so a run quarantines nobody real.
+Defaults point at a burn address, so a run quarantines nobody real, and use
+`EVM_ADDRESS` — whose evidence identifier *is* the reported target, so the
+contract's binding check passes by construction. To drive the cycle from a
+transaction instead, pass `--platform EVM_TX --trace 0x<64 hex>`; the target must
+then be a party to that transaction, because the contract verifies the
+participant set before any model reads the payload. Both platforms resolve to
+`eth.blockscout.com` / `base.blockscout.com`, which answer without an API key.
+
+If the verdict carries a quarantine, the run also prints the escrow it opened:
+the bond and bounty are held for the length of the appeal window rather than
+paid to the reporter, and are released (or slashed) by the appeal outcome.
 
 ## Rate limiting
 

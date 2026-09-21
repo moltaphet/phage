@@ -49,6 +49,19 @@ export function ImmuneStatsBanner({ stats, loading, onFundPoolClick, onRefresh }
         <p className="readout-note">Slashed bonds · protocol insurance</p>
       </div>
 
+      <div className="readout">
+        <div className="readout-top">
+          <span className="readout-label">Disputed escrow</span>
+        </div>
+        <div>
+          <span className="readout-value">{stats.locked_escrow_gen}</span>
+          <span className="readout-unit">GEN</span>
+        </div>
+        <p className="readout-note">
+          Held across {stats.total_escrows} quarantine {stats.total_escrows === 1 ? 'verdict' : 'verdicts'} until the appeal window closes
+        </p>
+      </div>
+
       <div className="readout readout-iso">
         <div className="readout-top">
           <span className="readout-label">Quarantined</span>

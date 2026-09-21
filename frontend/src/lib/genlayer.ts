@@ -20,6 +20,8 @@ import {
 import type {
   AppealRecord,
   Antibody,
+  EscrowRecord,
+  EscrowStatus,
   PathogenReport,
   ProtocolState,
   ProtocolStats,
@@ -172,6 +174,24 @@ function mapAppeal(raw: unknown): AppealRecord {
   };
 }
 
+function mapEscrow(raw: unknown): EscrowRecord {
+  const r = toRecord(raw);
+  const lockedUntil = asNumber(r.locked_until_utc);
+  return {
+    report_id: asString(r.report_id),
+    exists: asBool(r.exists),
+    target_agent: asString(r.target_agent),
+    reporter: asString(r.reporter),
+    bond_gen: attoToGen(asString(r.bond_atto)),
+    payout_gen: attoToGen(asString(r.payout_atto)),
+    locked_until_utc: lockedUntil,
+    locked_until_iso: lockedUntil ? isoFromUtc(lockedUntil) : '',
+    status: (asString(r.status) || 'NONE') as EscrowStatus,
+    created_at_utc: asNumber(r.created_at_utc),
+    is_releasable: asBool(r.is_releasable),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Aggregate live read used to hydrate the whole dashboard from chain state.
 // ---------------------------------------------------------------------------
@@ -205,6 +225,8 @@ export async function loadProtocolState(): Promise<ProtocolState> {
     protocol_reserves_gen: attoToGen(asString(overview.protocol_reserves_atto)),
     total_deposited_gen: attoToGen(asString(overview.total_deposited_atto)),
     total_claimed_gen: attoToGen(asString(overview.total_claimed_atto)),
+    locked_escrow_gen: attoToGen(asString(overview.locked_escrow_atto)),
+    total_escrows: asNumber(overview.total_escrows),
     total_quarantines_active: activeQuarantines,
     total_antibodies_minted: asNumber(overview.total_antibodies) || antibodies.length,
     total_reports_evaluated: evaluatedReports,
@@ -264,6 +286,15 @@ export async function getTotalAppeals(): Promise<number> {
   const client = getReadClient();
   const overview = toRecord(await read(client, 'get_registry_overview'));
   return asNumber(overview.total_appeals);
+}
+
+/**
+ * The disputed bond+bounty an unresolved report is holding in escrow. Reports whose
+ * verdict carried no quarantine have no escrow, and come back with `exists: false`.
+ */
+export async function getEscrow(reportId: string): Promise<EscrowRecord> {
+  const client = getReadClient();
+  return mapEscrow(await read(client, 'get_escrow', [reportId]));
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +374,15 @@ export function reclaimExpiredReportBond(client: GenClient, reportId: string): P
 
 export function withdraw(client: GenClient): Promise<string> {
   return write(client, { functionName: 'withdraw' });
+}
+
+/**
+ * Release a matured escrow to the reporter it was opened for. Permissionless: the
+ * contract only ever pays the recorded reporter, so anyone can trigger it once the
+ * appeal window has closed.
+ */
+export function releaseEscrow(client: GenClient, reportId: string): Promise<string> {
+  return write(client, { functionName: 'release_escrow', args: [reportId] });
 }
 
 // Await a GenLayer transaction receipt. On-chain LLM consensus (evaluate_pathogen /

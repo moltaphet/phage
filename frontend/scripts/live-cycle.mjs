@@ -14,11 +14,13 @@
 //
 //   GL_PK=$(security find-generic-password -s genlayer-cli -a account:<name> -w) \
 //     node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs \
-//     ./scripts/live-cycle.mjs [--dry] [--report-id <id>] [--trace <owner>/<repo>]
+//     ./scripts/live-cycle.mjs [--dry] [--report-id <id>] [--platform <p>] [--trace <id>]
 //
-// Only GITHUB_AUDIT can complete: the other three telemetry hosts in the contract's
-// URL templates do not resolve, so their leader_fn always raises [TRANSIENT]. See
-// README §7.2 and the telemetry note in GRANT_PROPOSAL.md.
+// The default platform is EVM_ADDRESS, whose evidence identifier *is* the reported
+// target — the contract requires them to match — and which resolves to a live record
+// for any address. Pass `--platform EVM_TX --trace 0x<64 hex>` to drive it from a
+// transaction instead; the target must then be a party to that transaction, which the
+// contract checks before the model is consulted.
 import { createClient } from 'genlayer-js';
 import { privateKeyToAccount } from 'viem/accounts';
 import { PHAGE_CONTRACT_ADDRESS, STUDIO_DEV_CHAIN, STUDIONET_RPC } from '../src/lib/contract.ts';
@@ -42,9 +44,12 @@ if (!PK) {
 }
 
 const REPORT_ID = flag('report-id', 'live-cycle-1');
-const TRACE_ID = flag('trace', 'genlayerlabs/genlayer-js');
 // A burn address: quarantining it is the intended effect and affects nobody real.
 const TARGET = flag('target', '0x000000000000000000000000000000000000dEaD');
+const PLATFORM = flag('platform', 'EVM_ADDRESS');
+// EVM_ADDRESS evidence has to name the target, so the trace defaults to the target
+// itself. A transaction platform needs a real 32-byte hash instead.
+const TRACE_ID = flag('trace', PLATFORM === 'EVM_ADDRESS' ? TARGET : '');
 const BOND = 100_000_000_000_000_000n; // 0.1 GEN — MIN_REPORTER_BOND
 const J = (_k, v) => (typeof v === 'bigint' ? v.toString() : v instanceof Map ? Object.fromEntries(v) : v);
 
@@ -54,7 +59,7 @@ const client = createClient({ chain: STUDIO_DEV_CHAIN, endpoint: STUDIONET_RPC, 
 console.log(`contract : ${PHAGE_CONTRACT_ADDRESS}`);
 console.log(`signer   : ${account.address}`);
 console.log(`report   : ${REPORT_ID}  target=${TARGET}`);
-console.log(`platform : GITHUB_AUDIT  trace=${TRACE_ID}`);
+console.log(`platform : ${PLATFORM}  trace=${TRACE_ID}`);
 console.log(`mode     : ${DRY ? 'DRY RUN — simulates only, spends nothing' : `LIVE — escrows ${BOND} atto`}\n`);
 
 async function step(label, fn) {
@@ -82,7 +87,7 @@ if (DRY) {
     const out = await client.simulateWriteContract({
       address: PHAGE_CONTRACT_ADDRESS,
       functionName: 'report_pathogen',
-      args: [REPORT_ID, TARGET, 'GITHUB_AUDIT', TRACE_ID],
+      args: [REPORT_ID, TARGET, PLATFORM, TRACE_ID],
       value: BOND,
     });
     return out === null || out === undefined ? 'accepted' : out;
@@ -111,7 +116,7 @@ const reportHash = await step('report_pathogen (escrow 0.1 GEN)', () =>
   fe.reportPathogen(client, {
     reportId: REPORT_ID,
     targetAgent: TARGET,
-    platform: 'GITHUB_AUDIT',
+    platform: PLATFORM,
     traceId: TRACE_ID,
     bondAtto: BOND,
   }),
@@ -155,6 +160,20 @@ try {
 }
 const after = await step('read state after', () => fe.loadProtocolState());
 
+// A quarantine verdict does not pay the reporter: the bond and bounty are escrowed for
+// the length of the appeal window. Read it back so the settlement path is visible here
+// rather than inferred from the tier.
+const escrow = await fe.getEscrow(REPORT_ID);
+if (escrow.exists) {
+  console.log(`── escrow for ${REPORT_ID}`);
+  console.log(`   status           ${escrow.status}`);
+  console.log(`   held             ${escrow.bond_gen} GEN bond + ${escrow.payout_gen} GEN bounty`);
+  console.log(`   locked until     ${escrow.locked_until_iso} (releasable now: ${escrow.is_releasable})`);
+  console.log(`   release with     release_escrow("${REPORT_ID}") once the window closes\n`);
+} else {
+  console.log(`── no escrow opened for ${REPORT_ID} (the verdict carried no quarantine)\n`);
+}
+
 // Report the delta rather than asserting it: the tier is the LLM's verdict, so the
 // balance movement is an outcome to observe, not a value to hardcode.
 const num = (s) => Number(s ?? 0);
@@ -165,8 +184,9 @@ console.log(`   quarantined      ${before.stats.total_quarantines_active} -> ${a
 console.log(`   antibodies       ${before.stats.total_antibodies_minted} -> ${after.stats.total_antibodies_minted}`);
 console.log(`   bounty pool      ${before.stats.bounty_pool_gen} -> ${after.stats.bounty_pool_gen} GEN`);
 console.log(`   reserves         ${before.stats.protocol_reserves_gen} -> ${after.stats.protocol_reserves_gen} GEN`);
+console.log(`   disputed escrow  ${before.stats.locked_escrow_gen} -> ${after.stats.locked_escrow_gen} GEN`);
 console.log(`   deposited        ${(num(after.stats.total_deposited_gen) - num(before.stats.total_deposited_gen)).toFixed(4)} GEN net in`);
 const claimable = await fe.getClaimableBalanceGen(account.address);
 console.log(`   claimable (you)  ${claimable} GEN`);
-console.log(`\n   bond refunded intact, slashed to reserves, or paid out as a bounty —`);
-console.log(`   whichever the tier above implies. Nothing here is asserted in advance.`);
+console.log(`\n   bond refunded intact, slashed to reserves, escrowed pending appeal, or paid`);
+console.log(`   out as a bounty — whichever the tier above implies. Nothing is asserted here.`);

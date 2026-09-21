@@ -13,7 +13,7 @@ Contract:        0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80
 Owner:           0x1f9813eeB2de53134af5C824cA156CE82C4EB0fa
 Live Demo:       https://phage-sentinel.vercel.app
 Pinned Runner:   py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng
-Verification:    Deployed & verified on-chain (Studio-dev); 57/57 local direct tests pass on the pinned RC toolchain
+Verification:    Deployed & verified on-chain (Studio-dev); 66/66 local direct tests pass on the pinned RC toolchain
 License:         MIT
 ```
 
@@ -78,8 +78,9 @@ Phage exists because **detection of the second column requires reasoning that on
 | **Anti-griefing** | `defended_appeals` | Escalating reporter bond after each upheld appeal |
 | **Anti-farming** | `last_bounty_claimed_at` | Per-target bounty cooldown |
 | **Settlement** | `claimable_balances` | Pull-based, per-account claimable ledger |
+| **Disputed escrow** | `escrows`, `escrow_ids` | Bond + bounty held for the appeal window after a quarantine verdict |
 
-### 3.2 The Four-Bucket Balance Ledger
+### 3.2 The Balance Ledger
 
 Every atto (1 GEN = 10¹⁸ atto) that enters the contract lives in exactly one accounting bucket at rest:
 
@@ -89,10 +90,12 @@ Every atto (1 GEN = 10¹⁸ atto) that enters the contract lives in exactly one 
 | **Protocol reserves** | `protocol_reserves_atto` | Slashed bonds (fabricated reports, rejected appeals) |
 | **Claimable balances** | `claimable_balances[addr]` | Funds owed to users, awaiting pull withdrawal |
 | **Total claimed** | `total_claimed_atto` | Cumulative value already withdrawn |
+| **Disputed escrow** | `escrows[report_id]` (`locked_escrow_atto`) | Bond + bounty won on a *quarantine* verdict, held for the appeal window |
 
-Two categories of funds are held **in escrow** while a decision is pending and are not yet assigned to a resting bucket:
+Three categories of funds are held **in escrow** while a decision is pending and are not yet assigned to a resting bucket:
 
 - **Pending report bonds** — a reporter's bond between `report_pathogen` and its `evaluate_pathogen` / `reclaim_expired_report_bond`.
+- **Disputed payouts** — a `TIER_PATHOGEN_CRITICAL` / `TIER_SUSPICIOUS_ANOMALY` verdict credits the reporter **nothing** at evaluation time. It opens an `EscrowRecord` holding the bond and bounty, locked for the length of the quarantine, which is exactly the appeal window (`appeal_quarantine` requires an active quarantine). The verification of the verdict and the payment for it are deliberately separated: the reporter is paid only once nothing can reverse the finding.
 - **In-flight appeal bonds** — settled atomically within `appeal_quarantine`, so they never persist across calls.
 
 `total_deposited_atto` tracks **all** native GEN ever received (funding + report bonds + appeal bonds).
@@ -102,10 +105,11 @@ Two categories of funds are held **in escrow** while a decision is pending and a
 At every point where no report is mid-evaluation, the ledger balances exactly:
 
 ```
-total_deposited = bounty_pool + protocol_reserves + Σ(claimable_balances) + total_claimed + Σ(pending_report_bonds)
+total_deposited = bounty_pool + protocol_reserves + Σ(claimable_balances) + total_claimed
+                + Σ(pending_report_bonds) + Σ(locked_escrows)
 ```
 
-Informally, **`Balance = Pool + Reserves + Claimable + Bonds`**. Every state transition is designed to preserve this equality: a bond either moves from *pending* → *reserves* (slash), *pending* → *claimable* (refund), or a bounty moves *pool* → *claimable* (net-zero across buckets). This invariant is asserted directly by the test suite across multi-cycle scenarios — including the subtle case where a malicious reporter withdraws a leaked bounty *before* a successful appeal (the un-reclaimable value stays accounted for inside `total_claimed`).
+Informally, **`Balance = Pool + Reserves + Claimable + Claimed + Bonds + Escrow`**. Every state transition is designed to preserve this equality: a bond either moves from *pending* → *reserves* (slash), *pending* → *claimable* (refund), or *pending* → *escrow* (quarantine verdict); and an escrow resolves to *claimable* (released) or splits back into *pool* + *reserves* (slashed). Each of those is a movement between buckets, never a creation or destruction of value. This invariant is asserted directly by the test suite across multi-cycle scenarios, in **`test_escrow_accounting_keeps_solvency_across_both_outcomes`** (one escrow slashed by an upheld appeal, one released after its window closes) and `test_solvency_invariant_multi_cycle`.
 
 ### 3.4 Checks-Effects-Interactions & Pull Withdrawals
 
@@ -207,6 +211,7 @@ Bounty payouts are additionally scaled to `min(BASE_BOUNTY_REWARD, bounty_pool /
 | `appeal_quarantine(target_agent, appeal_proof_trace_id, platform)` | ✅ | Appeal an active quarantine with a bond. Upheld → lift + revoke + slash reporter; rejected → slash appeal bond. |
 | `recover_agent(target_agent)` | — | Clear an expired quarantine flag once the cooldown has elapsed. |
 | `reclaim_expired_report_bond(report_id)` | — | Reporter-only reclaim of a bond for a report left un-evaluated past the 7-day liveness timeout. |
+| `release_escrow(report_id)` | — | Release a matured disputed payout to its recorded reporter. Permissionless. |
 | `withdraw()` | — | Pull the caller's entire claimable balance (CEI, `on="finalized"`). |
 | `withdraw_claimable()` | — | Idempotent alias of `withdraw()`. |
 
@@ -224,7 +229,8 @@ Bounty payouts are additionally scaled to `min(BASE_BOUNTY_REWARD, bounty_pool /
 | `get_claimable_balance(account)` | Claimable atto (string) |
 | `get_defended_appeals_count(target_agent)` | Successful-defense counter |
 | `get_required_reporter_bond(target_agent)` | Current (possibly escalated) bond |
-| `get_registry_overview()` | Global counters + the four ledger buckets |
+| `get_registry_overview()` | Global counters + the ledger buckets, incl. `locked_escrow_atto` |
+| `get_escrow(report_id)` | Status, amounts, and release eligibility of a disputed payout |
 | `list_reports_paginated(offset, limit)` | Bounded page of reports |
 | `list_quarantined_agents_paginated(offset, limit)` | Bounded page of quarantines |
 | `list_antibodies_paginated(offset, limit)` | Bounded page of antibodies |
@@ -232,7 +238,15 @@ Bounty payouts are additionally scaled to `min(BASE_BOUNTY_REWARD, bounty_pool /
 
 ### 5.3 Supported Telemetry Platforms
 
-`AGENT_RPC`, `TX_TRACE`, `SECURITY_FEED`, `GITHUB_AUDIT`. Callers submit only a **trace identifier**, never a full URL — the contract deterministically builds the authoritative provider URL from a whitelisted template, eliminating SSRF/URL-injection vectors.
+Three platforms, each resolving to a live keyless public indexer and each carrying an identifier the contract checks against the accused agent **before any model reads the payload**:
+
+| Platform | Provider | Binding check |
+| :--- | :--- | :--- |
+| `EVM_TX` | `eth.blockscout.com` | Target must appear in the transaction's participant set |
+| `EVM_TX_BASE` | `base.blockscout.com` | Same, on Base |
+| `EVM_ADDRESS` | `eth.blockscout.com` | Evidence identifier must *equal* the target address |
+
+Callers submit only a **trace identifier**, never a full URL — the contract deterministically builds the authoritative provider URL from a whitelisted template, eliminating SSRF/URL-injection vectors. A payload that does not implicate the accused resolves `TIER_FABRICATED_ATTACK` and slashes the reporter's bond; the same gate applies to appeal proofs. The check is deterministic and runs on the validator's own copy of the response, so it is a guarantee rather than a prompt instruction.
 
 ---
 
@@ -254,19 +268,19 @@ Evaluation and appeal arbitration both run through GenLayer's leader/validator m
 
 ## 7. Security & Audit Verification
 
-### 7.1 Test Suite — 57 direct-mode tests
+### 7.1 Test Suite — 66 direct-mode tests
 
 The direct-mode suite exercises every key path and adversarial edge case in-memory (no Docker, ~90s):
 
 ```bash
 .venv/bin/pytest tests/direct/ -v
 # ...
-# 57 passed
+# 66 passed
 ```
 
 > **Toolchain note:** the live contract targets the v0.3.0 runner (`py-genlayer:5jyc…`) on Studio-dev and is verified on-chain. The versions in `requirements.txt` are load-bearing — see §8.2 for why the RC line is the one that works.
 
-Coverage highlights: bounty funding, all-platform reporting & validation, fail-closed telemetry (`429/500`/empty), URL/injection rejection, tier→payout binding, adversarial slashing (fabricated + `404`), multi-cycle solvency, pull settlement, multi-wallet & cross-platform replay, appeal upheld/rejected, escalating bonds, bounty-farming cooldown & pool scaling, paginated views, quarantine expiry/recovery, antibody revocation, boolean anti-spoofing, bounded-liveness reclaim, and two audit regressions (solvency after a pre-appeal withdrawal, and a critical report against an empty pool), plus malformed-address rejection across every external-input entrypoint.
+Coverage highlights: bounty funding, all-platform reporting & validation, fail-closed telemetry (`429/500`/empty), URL/injection rejection, tier→payout binding, adversarial slashing (fabricated + `404`), multi-cycle solvency, pull settlement, multi-wallet & cross-platform replay, appeal upheld/rejected, escalating bonds, bounty-farming cooldown & pool scaling, paginated views, quarantine expiry/recovery, antibody revocation, boolean anti-spoofing, bounded-liveness reclaim, plus malformed-address rejection across every external-input entrypoint. Two audit regressions pin the remediated economics: **evidence binding** (a transaction the target is not party to, and an address record naming a different address, both resolve `TIER_FABRICATED_ATTACK` and slash the reporter rather than reaching a verdict) and **escrow** (a reporter cannot withdraw a disputed payout before the appeal that reverses it, an unbound appeal proof forfeits the appellant's bond, and escrow accounting keeps the solvency invariant across both appeal outcomes).
 
 ### 7.2 Protection Matrix
 
@@ -274,7 +288,10 @@ Coverage highlights: bounty funding, all-platform reporting & validation, fail-c
 | :--- | :--- |
 | **Reentrancy / value leakage** | Strict CEI + pull withdrawal, `on="finalized"` settlement |
 | **Cross-wallet / cross-platform replay** | `sha256(platform ‖ target ‖ trace)` digest across `pending` + `evaluated` sets |
-| **SSRF / URL injection** | Trace-id-only inputs; deterministic whitelisted URL templates; `://` rejected |
+| **SSRF / URL injection** | Trace-id-only inputs; deterministic whitelisted URL templates; identifier must be a bare 0x address or tx hash |
+| **Unbound / generic evidence** | Evidence-to-target binding checked in-contract before the model runs: tx participant set must include the target, address records must equal it; failure resolves `TIER_FABRICATED_ATTACK` and slashes the reporter |
+| **Appeal with unrelated proof** | Same binding gate on appeal telemetry; failure forfeits the appellant's 0.2 GEN bond |
+| **Front-running an appeal payout** | Disputed bond + bounty escrowed for the quarantine duration; never withdrawable while an appeal is possible |
 | **Prompt injection** | `<untrusted_input>` fencing + ASCII sanitization + guardrail system prompt |
 | **Consensus divergence** | Coarse telemetry pre-quantization; agreement on categorical tier only |
 | **Validator error opacity** | Safe, sandboxed `gl.vm.run_nondet` |
@@ -286,15 +303,23 @@ Coverage highlights: bounty funding, all-platform reporting & validation, fail-c
 
 ### 7.3 Solvency Guarantee
 
-The invariant `Balance = Pool + Reserves + Claimable + Bonds` is preserved by construction and asserted by tests. Slashes route to reserves, refunds and bounties route to claimable, and the bounty pool is restored on upheld appeals whenever the leaked value is still reclaimable — otherwise it remains fully accounted for in `total_claimed`.
+The invariant `Balance = Pool + Reserves + Claimable + Claimed + Bonds + Escrow` is preserved by construction and asserted by tests. Slashes route to reserves, refunds and matured escrows route to claimable, and the bounty pool is restored on upheld appeals from the escrow the bounty never left.
 
-### 7.4 Optimistic Payout Dynamics & Post-Finalization Appeal Trade-off
+### 7.4 Escrowed Disputed Payouts
 
-**Mechanism.** `withdraw()` settles the caller's `claimable_balances` entry under GenVM `on="finalized"` semantics: value only leaves the contract once the underlying evaluation is finalized by consensus, so an evaluation that is appealed and slashed *within the same finalization window* cannot leak value.
+**Mechanism.** A verdict that quarantines a target does not pay the reporter. `evaluate_pathogen` opens an `EscrowRecord` holding the reporter's bond and the bounty, with `locked_until_utc = now + quarantine_duration`; the reporter's `claimable_balances` entry is not touched. The quarantine duration *is* the appeal window, because `appeal_quarantine` requires an active quarantine — so the lock cannot expire while an appeal is still possible.
 
-**Residual trade-off.** The appeal claw-back is bounded by what is still on-hand — `slash_amount = min(current_claimable, orig_bond + orig_payout)`. If a reporter withdraws their claimable bounty *immediately after finalization* and the defendant then wins an appeal *afterward*, `current_claimable` is already `0`, so the slash reclaims nothing and the paid bounty is **not** restored to `bounty_pool_atto` — the bounty escrow is economically depleted. This does **not** break the solvency invariant: the withdrawn value stays fully accounted for in `total_claimed_atto` (`Balance = Pool + Reserves + Claimable + Bonds` still holds). The loss is economic (a depleted bounty pool after a successful grief-then-withdraw), not an insolvency. This exact case is pinned by `test_solvency_preserved_when_reporter_withdrew_before_appeal`.
+**Why the value is never in the reporter's hands.** The previous model credited the bounty to `claimable_balances` at evaluation time and clawed it back on a successful appeal, bounded by `min(current_claimable, bond + payout)`. A reporter who withdrew immediately after finalization left nothing to reclaim. Escrowing removes the window entirely rather than narrowing it: there is no moment at which the disputed value is both withdrawable and still appealable, so the front-running race does not exist to be lost. The penalty on an upheld appeal therefore lands in full — the escrow still holds both amounts by construction.
 
-**Roadmap (Phage v2 — Timelock Challenge Window).** A configurable **24–48h Challenge Window** will hold verified bounties in a new `queued_payouts` state before they graduate to `claimable_balances`. A payout becomes withdrawable only after the window elapses with no upheld appeal, fully eliminating the front-running withdrawal edge case while preserving the current `on="finalized"` settlement guarantees.
+**Resolution paths.**
+
+| Outcome | Escrow | Also |
+| :--- | :--- | :--- |
+| Appeal upheld (quarantine overturned) | `SLASHED` — bounty → `bounty_pool_atto`, reporter bond → `protocol_reserves_atto` | appellant refunded; quarantine and antibody revoked; defended-appeal counter incremented |
+| Appeal rejected | `RELEASED` to the reporter immediately | appellant bond → reserves; quarantine stays active |
+| No appeal; window elapses | `release_escrow(report_id)` → `RELEASED` | permissionless: pays only the recorded reporter |
+
+Two regressions pin this: `test_reporter_cannot_escape_appeal_penalty_by_withdrawing_first` (the withdrawal route is closed, and the upheld appeal recovers the full bond and bounty), and `test_escrow_accounting_keeps_solvency_across_both_outcomes`.
 
 ---
 
@@ -318,7 +343,7 @@ uv pip install --python .venv/bin/python --prerelease=allow -r requirements.txt
 
 ```bash
 # from the repository root, using the project virtualenv
-.venv/bin/pytest tests/direct/ -v      # expect: 57 passed
+.venv/bin/pytest tests/direct/ -v      # expect: 66 passed
 ```
 
 The direct runner loads the contract against its pinned runner
@@ -327,7 +352,7 @@ The direct runner loads the contract against its pinned runner
 The versions in `requirements.txt` are load-bearing, not cosmetic. On the older stable
 toolchain (`genlayer-test 0.29.2` / `genlayer-py 0.16.3`) the direct runner extracts a
 `v0.2.16` SDK that reads its calldata from stdin at import time and dies under pytest with
-`DecodingError: unexpected end of memory` — all 57 tests fail before reaching the contract.
+`DecodingError: unexpected end of memory` — all 66 tests fail before reaching the contract.
 `genlayer-py >= 0.19.0rc2` also ships the `studio_devnet` chain (id 61997) that
 `gltest.config.yaml` targets; on the older SDK it does not exist at all.
 
@@ -413,9 +438,10 @@ node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs ./scr
 node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs ./scripts/security-suite.mjs
 ```
 
-The first walks all 14 view methods and dry-runs all 8 writes; the second runs 50 adversarial
-cases (unauthorized withdrawal, `report_id` validation, platform allow-list, `trace_id`
-injection, malformed addresses, bond enforcement, state-machine guards, pagination bounds).
+The first walks all 15 view methods and dry-runs all 9 writes; the second runs 60 adversarial
+cases (unauthorized withdrawal, `report_id` validation, platform allow-list, evidence-identifier
+injection, evidence-to-target binding, escrow release guards, malformed addresses, bond
+enforcement, state-machine guards, pagination bounds).
 Both pace themselves under the node's limit of **30 requests per minute** — exceeding it fails
 with error `-32029` and a `retry_after_seconds` hint. See
 [`frontend/scripts/README.md`](frontend/scripts/README.md).
@@ -429,18 +455,20 @@ GL_PK=$(security find-generic-password -s genlayer-cli -a account:<name> -w) \
   node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs ./scripts/live-cycle.mjs
 ```
 
-It has been run against this deployment. Report `live-cycle-1` (target `0x…dEaD`,
-`GITHUB_AUDIT`, trace `genlayerlabs/genlayer-js`) resolved **`TIER_BENIGN_NOISE`** on-chain: the
-LLM classified a real public repository as nominal traffic, the contract bound that tier to zero
-quarantine seconds and zero payout, and the 0.1 GEN bond was refunded intact to
+It has been run against this deployment. Report `live-cycle-1` (target `0x…dEaD`, trace naming
+that same address under the then-current `GITHUB_AUDIT` platform) resolved **`TIER_BENIGN_NOISE`**
+on-chain: the LLM classified an unremarkable address as nominal traffic, the contract bound that
+tier to zero quarantine seconds and zero payout, and the 0.1 GEN bond was refunded intact to
 `claimable_balances`. No antibody was minted, which is correct — only `TIER_PATHOGEN_CRITICAL`
-mints one. The ledger balances: `total_deposited_atto` 0.1 GEN against 0.1 GEN claimable.
+mints one. The ledger balanced: `total_deposited_atto` 0.1 GEN against 0.1 GEN claimable.
 
-Only `GITHUB_AUDIT` can complete a cycle. The other three telemetry hosts in
-`_PLATFORM_URL_TEMPLATES` do not resolve, so their `leader_fn` raises `[TRANSIENT]` and the
-evaluation reverts — see §7.2. The live cycle therefore proves the engine, the tier→payout
-binding, the replay guard and the settlement path; it does not exercise the quarantine or
-antibody branches, which need a `CRITICAL` verdict from a provider that exists.
+The platform set has since been replaced (§5.3): all three providers now resolve, and every one
+of them binds its evidence to the reported target. The cycle defaults to `EVM_ADDRESS`, whose
+evidence identifier *is* the target, so it binds by construction; pass
+`--platform EVM_TX --trace 0x<64 hex>` to drive it from a transaction where the target is a
+party. Because the remaining providers are live, a `CRITICAL` verdict is now reachable, and the
+script prints the escrow it opens — the bond and bounty held for the appeal window rather than
+paid to the reporter.
 
 ### 9.4 Live Demo
 
@@ -470,7 +498,7 @@ Phage/
 ├── tests/
 │   └── direct/
 │       ├── conftest.py              # Fixtures + web/LLM mock helpers
-│       └── test_phage_sentinel.py   # 57-test direct-mode suite
+│       └── test_phage_sentinel.py   # 66-test direct-mode suite
 ├── frontend/                        # React 19 + Vite + TS dApp
 │   ├── scripts/                     # Live studio-dev suites (views, writes, security, live cycle)
 │   ├── .env.example                 # Optional VITE_PHAGE_CONTRACT_ADDRESS override
@@ -495,6 +523,6 @@ Phage/
 
 ## 11. Disclaimer & License
 
-Phage Sentinel is research-grade software provided **as-is** for the GenLayer ecosystem. It has not undergone a third-party security audit; the 57-test suite and the invariants documented above are the current verification baseline. Deploy to mainnet-equivalent environments at your own risk and after independent review.
+Phage Sentinel is research-grade software provided **as-is** for the GenLayer ecosystem. It has not undergone a third-party security audit; the 66-test suite and the invariants documented above are the current verification baseline. Deploy to mainnet-equivalent environments at your own risk and after independent review.
 
 Released under the **MIT License**.
