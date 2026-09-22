@@ -6,15 +6,15 @@ import { attoToGen, genToAtto, shortHex } from './lib/format';
 import { describeError } from './lib/errors';
 import { useWallet } from './lib/useWallet';
 import {
-  appealQuarantine,
-  deriveAppealId,
+  fileAppeal,
   fundBountyPool,
   getAppeal,
+  getEscrow,
   getRequiredReporterBondAtto,
-  getTotalAppeals,
   getWriteClient,
   loadProtocolState,
   recoverAgent,
+  resolveAppeal,
   waitForReceipt,
   withdraw,
 } from './lib/genlayer';
@@ -52,6 +52,7 @@ const EMPTY_STATS: ProtocolStats = {
   total_deposited_gen: '0.0000',
   total_claimed_gen: '0.0000',
   locked_escrow_gen: '0.0000',
+  pending_appeal_bonds_gen: '0.0000',
   total_escrows: 0,
   total_quarantines_active: 0,
   total_antibodies_minted: 0,
@@ -60,7 +61,6 @@ const EMPTY_STATS: ProtocolStats = {
   system_health_pct: 100,
 };
 
-const APPEAL_BOND_GEN = '0.20'; // APPEAL_BOND = 0.2 GEN, enforced on-chain.
 
 type Toast = { text: string; type: 'success' | 'info' | 'error'; href?: string };
 
@@ -214,37 +214,51 @@ export function App() {
     const client = getSigner();
     if (!client) throw new Error('Wallet not connected.');
 
-    const bondAtto = genToAtto(APPEAL_BOND_GEN);
-    let totalBefore = 0;
-    try {
-      totalBefore = await getTotalAppeals();
-    } catch {
-      /* non-fatal: we still submit; id derivation may be skipped below */
+    // Appeals are against a report, not an agent: the one whose verdict defines the
+    // agent's current quarantine. Its escrow says whether it is still appealable and
+    // what the bond is (it rises with each rejected appeal on that report).
+    const quarantine = quarantinedAgents.find(
+      (q) => q.target_agent.toLowerCase() === data.targetAgent.toLowerCase(),
+    );
+    const reportId = quarantine?.last_report_id;
+    if (!reportId) throw new Error('No quarantine verdict found for that agent.');
+    const escrow = await getEscrow(reportId);
+    if (escrow.status === 'UNDER_APPEAL') {
+      throw new Error(`Report ${reportId} is already under appeal (${escrow.active_appeal_id}).`);
+    }
+    if (!escrow.is_appealable) {
+      throw new Error(`The appeal window for report ${reportId} has closed.`);
     }
 
+    // Step 1: file. Deterministic — posts the bond and freezes the disputed payout.
     showToast('Confirm the appeal bond in your wallet…', 'info');
-    const hash = await appealQuarantine(client, {
-      targetAgent: data.targetAgent,
+    const fileHash = await fileAppeal(client, {
+      reportId,
       proofTraceId: data.proofTraceId,
       platform: data.platform,
-      bondAtto,
+      bondAtto: BigInt(escrow.required_appeal_bond_atto),
     });
-    showToast('Appeal submitted — running consensus on-chain…', 'info', hash);
+    showToast('Appeal filed — the reporter\'s payout is now frozen.', 'info', fileHash);
+    await waitForReceipt(client, fileHash);
+
+    const appealId = (await getEscrow(reportId)).active_appeal_id;
+    if (!appealId) throw new Error('Appeal filed, but its id could not be read back.');
+
+    // Step 2: resolve. Runs appeal consensus; anyone can retry this if it fails.
+    showToast('Confirm the resolution in your wallet…', 'info');
+    const hash = await resolveAppeal(client, appealId);
+    showToast('Resolving appeal — running consensus on-chain…', 'info', hash);
     await waitForReceipt(client, hash);
 
-    // Read the real appeal verdict the contract just recorded.
-    try {
-      const appealId = deriveAppealId(data.targetAgent, totalBefore + 1);
-      const record = await getAppeal(appealId);
-      setAppeals((prev) => [record, ...prev.filter((a) => a.appeal_id !== record.appeal_id)]);
-      showToast(
-        record.state === 'UPHELD' ? 'Appeal upheld — quarantine lifted.' : `Appeal ${record.state.toLowerCase()}.`,
-        record.state === 'UPHELD' ? 'success' : 'info',
-        hash,
-      );
-    } catch {
-      showToast('Appeal recorded on-chain.', 'success', hash);
-    }
+    const record = await getAppeal(appealId);
+    setAppeals((prev) => [record, ...prev.filter((a) => a.appeal_id !== record.appeal_id)]);
+    showToast(
+      record.state === 'UPHELD'
+        ? 'Appeal upheld — reporter slashed, quarantine lifted.'
+        : `Appeal ${record.state.toLowerCase()}.`,
+      record.state === 'UPHELD' ? 'success' : 'info',
+      hash,
+    );
 
     setVaultRefreshKey((k) => k + 1);
     wallet.refreshBalance();

@@ -1,0 +1,38 @@
+{
+  "network": "studio-dev",
+  "chainId": 61997,
+  "rpc": "https://studio-dev.genlayer.com/api",
+  "explorer": "https://explorer-studio-dev.genlayer.com",
+  "current": {
+    "contract": "PhageSentinel",
+    "version": "0.4.0",
+    "source": "contracts/phage_sentinel.py",
+    "address": "0x038d5Fd5082Cb05586C4C7CBcdDE827AC7f6BBa1",
+    "deployTx": "0x58e04a07337f3fb03076c5b42040bbe1d6a94e0b1c4908e90920c5f4540d632d",
+    "deployer": "0x2E56C8579fA11CB144E6FD778dA772061f4dd930",
+    "deployedAt": "2026-09-22",
+    "consensusStatus": "ACCEPTED",
+    "evidenceProviders": {
+      "EVM_TX": "https://eth.blockscout.com/api/v2/transactions/{hash}",
+      "EVM_TX_BASE": "https://base.blockscout.com/api/v2/transactions/{hash}"
+    },
+    "liveCycle": {
+      "reportId": "euler-exploit-1",
+      "target": "0x5F259D0b76665c337c6104145894F4D1D2758B8c",
+      "evidence": "EVM_TX 0xc310a0affe2169d1f6feec1c63dbc7f7c62a887fa48795d327d4d2da2d6b111d (Euler Finance exploit, 2023-03-13)",
+      "reportTx": "0xe118c1556e47ea97e7ab1bb61facf1baa37faa6968d4e41fddff54241357f618",
+      "evidenceBinding": "from",
+      "evaluateTx": "0x374e3c111a253d6671012805490edf776450a649a52431b7e1bc2cb24b29d58e",
+      "tier": "TIER_PATHOGEN_CRITICAL",
+      "escrow": "LOCKED 0.1 GEN until 2026-09-29T17:55:29Z"
+    }
+  },
+  "superseded": [
+    {
+      "version": "0.3.0",
+      "address": "0x86a3C3d3B35BD6eF5f0D947EB49a553b8200bd80",
+      "deployer": "0x1f9813eeB2de53134af5C824cA156CE82C4EB0fa",
+      "note": "Accepted EVM_ADDRESS evidence and resolved appeals in a single transaction; replaced by 0.4.0."
+    }
+  ]
+}

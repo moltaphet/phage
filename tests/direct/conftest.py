@@ -61,24 +61,59 @@ def _reset_web_mocks(direct_vm) -> None:
     """
     direct_vm._web_mocks.clear()
     direct_vm._web_mocks_hit.clear()
+    direct_vm._live_web_handler = None
+
+
+def serve_incident(direct_vm, target, role: str = "from", status: str = "ok", extra=None):
+    """Serve a bound incident for *whatever* transaction hash is requested.
+
+    The contract requires the telemetry to echo the cited hash and to name the target as
+    a party, so a fixed body cannot serve several reports or an appeal at once. This
+    installs the harness's fallback web handler, which reads the hash from the URL and
+    answers with a Blockscout-shaped transaction in which `target` plays `role`
+    ("from", "to" or "created_contract"). `extra` fields are merged into the body.
+    """
+    _reset_web_mocks(direct_vm)
+    target_hex = addr_hex(target)
+
+    def handler(data):
+        requested = str(data.get("url", "")).rstrip("/").rsplit("/", 1)[-1]
+        body = tx_body(
+            requested,
+            from_addr=target_hex if role == "from" else OTHER_PARTY,
+            to_addr=target_hex if role == "to" else None,
+            created=target_hex if role == "created_contract" else None,
+            status=status,
+        )
+        body.update(extra or {})
+        return {"ok": {"response": {
+            "status": 200,
+            "headers": {},
+            "body": json.dumps(body).encode("utf-8"),
+        }}}
+
+    direct_vm._live_web_handler = handler
+
+
+# An address that is never a test account, used as the non-target party of a transaction.
+OTHER_PARTY = "0x" + "0e" * 20
 
 
 def mock_telemetry_success(direct_vm, body_dict: dict, target_hex=None):
-    """Serve `body_dict` as the telemetry response.
+    """Serve `body_dict`'s indicator fields inside a transaction bound to `target_hex`.
 
-    Pass `target_hex` to make the payload a valid bound record for an EVM_ADDRESS
-    report: the contract requires the response to echo the reported target, so an
-    address report whose telemetry does not name the target is rejected as unbound.
+    Without `target_hex` the body is served verbatim, which is not a transaction naming
+    the cited hash -- i.e. generic metadata that must fail the binding check.
     """
-    payload = dict(body_dict)
     if target_hex is not None:
-        payload["hash"] = addr_hex(target_hex)
+        serve_incident(direct_vm, target_hex, extra=body_dict)
+        return
     _reset_web_mocks(direct_vm)
     direct_vm.mock_web(
         r".*",
         {
             "status": 200,
-            "body": json.dumps(payload),
+            "body": json.dumps(body_dict),
         },
     )
 
@@ -106,13 +141,25 @@ def mock_telemetry_status(direct_vm, status: int, body: str = ""):
     )
 
 
+def _replace_llm_mock(direct_vm, pattern: str, response: str) -> None:
+    """Register an LLM mock, dropping any earlier one for the same prompt pattern.
+
+    LLM mocks are first-match-wins like web mocks, so without this a test that stubs a
+    second verdict (e.g. an appeal after an earlier appeal) silently gets the first.
+    """
+    direct_vm._llm_mocks[:] = [m for m in direct_vm._llm_mocks if m[0].pattern != pattern]
+    direct_vm._llm_mocks_hit.clear()
+    direct_vm.mock_llm(pattern, response)
+
+
 def mock_pathogen_verdict(
     direct_vm,
     tier: str = "TIER_PATHOGEN_CRITICAL",
     pathogen_type: str = "PROMPT_INJECTION",
     rationale: str = "Active exploit confirmed from forensic logs.",
 ):
-    direct_vm.mock_llm(
+    _replace_llm_mock(
+        direct_vm,
         PROMPT_PATTERN,
         # Double-encode: exec_prompt(response_format="json") needs a JSON *string*.
         # The direct harness deserializes one layer, so double-dumps yields text.
@@ -129,7 +176,8 @@ def mock_appeal_verdict(
     tier: str = "TIER_BENIGN_NOISE",
     rationale: str = "Target proof verifies completely benign operation.",
 ):
-    direct_vm.mock_llm(
+    _replace_llm_mock(
+        direct_vm,
         APPEAL_PROMPT_PATTERN,
         # Double-encode: exec_prompt(response_format="json") needs a JSON *string*.
         # The direct harness deserializes one layer, so double-dumps yields text.

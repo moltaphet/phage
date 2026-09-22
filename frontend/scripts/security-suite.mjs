@@ -60,61 +60,66 @@ await mustReject('withdraw_claimable() by an account with no claimable balance',
 await mustReject('drain protocol reserves (no such method exists)', { functionName: 'withdraw_reserves' }, /not found|unknown|Missing|EXPECTED|execution failed/i);
 
 console.log('\n=== 2. report_pathogen: report_id validation ===');
-const legit = { platform: 'EVM_ADDRESS', traceId: TARGET };
+// Evidence is a transaction the target is party to. Guards that fire before the
+// binding fetch are exercised with a well-formed hash; the binding itself is
+// exercised against real Ethereum transactions in section 5.
+const legit = { platform: 'EVM_TX', traceId: '0x' + 'a'.repeat(64) };
 await mustReject('empty report_id', { functionName: 'report_pathogen', args: ['', TARGET, legit.platform, legit.traceId], value: GEN }, EXP);
 await mustReject('whitespace-only report_id', { functionName: 'report_pathogen', args: ['   ', TARGET, legit.platform, legit.traceId], value: GEN }, EXP);
 
 console.log('\n=== 3. report_pathogen: platform allow-list ===');
-for (const p of ['SOLANA', 'evm_tx', 'EVM_TX ', '', '../../etc', 'EVM_TX\x00', 'GITHUB_AUDIT', 'AGENT_RPC', 'SECURITY_FEED', 'TX_TRACE']) {
+for (const p of ['SOLANA', 'evm_tx', 'EVM_TX ', '', '../../etc', 'EVM_TX\x00', 'GITHUB_AUDIT', 'AGENT_RPC', 'SECURITY_FEED', 'TX_TRACE', 'EVM_ADDRESS']) {
   await mustReject(`platform ${JSON.stringify(p)}`, { functionName: 'report_pathogen', args: ['sec-p1', TARGET, p, legit.traceId], value: GEN }, EXP);
 }
 
 console.log('\n=== 4. report_pathogen: evidence identifier validation ===');
-// Transaction platforms take exactly 0x + 64 hex; EVM_ADDRESS takes exactly 0x + 40.
+// Every platform takes exactly 0x + 64 hex -- never a URL, label or address.
 const BAD_TX = ['http://evil.example/x', 'https://evil.example/x', 'ftp://evil.example', 'trace://x',
                 '../../etc/passwd', 'trace/../../etc', 'abc', 'x'.repeat(67), 'трейс-0001',
                 'trace\x00id', 'trace id', '${jndi:ldap://x}', "' OR 1=1--",
-                '0x' + 'a'.repeat(63), '0x' + 'a'.repeat(65), '0x' + 'z'.repeat(64), 'a'.repeat(64)];
+                '0x' + 'a'.repeat(63), '0x' + 'a'.repeat(65), '0x' + 'z'.repeat(64), 'a'.repeat(64),
+                TARGET];
 for (const t of BAD_TX) {
   await mustReject(`EVM_TX trace ${JSON.stringify(t.slice(0, 30))}`, { functionName: 'report_pathogen', args: ['sec-t', TARGET, 'EVM_TX', t], value: GEN }, EXP);
 }
 
-console.log('\n=== 5. report_pathogen: evidence must name the reported target ===');
-// The core guard: EVM_ADDRESS evidence *is* the target address, so a record about a
-// different address cannot be attached to this report. This is what stops a reporter
-// from citing generic, unrelated metadata as proof against an arbitrary agent.
-const OTHER = '0x0000000000000000000000000000000000000001';
-await mustReject('EVM_ADDRESS trace naming a different address than the target',
-  { functionName: 'report_pathogen', args: ['sec-binding-1', TARGET, 'EVM_ADDRESS', OTHER], value: GEN }, EXP);
-await mustReject('EVM_ADDRESS trace that is a valid address of the wrong length',
-  { functionName: 'report_pathogen', args: ['sec-binding-2', TARGET, 'EVM_ADDRESS', '0x' + 'a'.repeat(39)], value: GEN }, EXP);
-await mustReject('EVM_ADDRESS trace that is a 32-byte hash, not an address',
-  { functionName: 'report_pathogen', args: ['sec-binding-3', TARGET, 'EVM_ADDRESS', '0x' + 'a'.repeat(64)], value: GEN }, EXP);
-await mustRead('EVM_ADDRESS trace equal to the target is accepted as bound',
-  { functionName: 'get_required_reporter_bond', args: [TARGET] },
-  (o) => ({ ok: typeof o === 'string' || typeof o === 'bigint', note: `bond for a bound target: ${o}` }));
+console.log('\n=== 5. report_pathogen: evidence must be an incident involving the target ===');
+// The core guard. Filing fetches the cited transaction from Blockscout and reverts
+// with ERR_UNBOUND_EVIDENCE unless it exists, echoes the cited hash, and names the
+// target as a party. The Euler exploit transaction is real; TARGET is not in it.
+const EULER_TX = '0xc310a0affe2169d1f6feec1c63dbc7f7c62a887fa48795d327d4d2da2d6b111d';
+const UNBOUND = /ERR_UNBOUND_EVIDENCE/;
+await mustReject('a real transaction the target is not a party to',
+  { functionName: 'report_pathogen', args: ['sec-binding-1', TARGET, 'EVM_TX', EULER_TX], value: GEN }, UNBOUND);
+await mustReject('a well-formed hash for a transaction that does not exist',
+  { functionName: 'report_pathogen', args: ['sec-binding-2', TARGET, 'EVM_TX', '0x' + '0'.repeat(63) + '1'], value: GEN }, UNBOUND);
+await mustReject('an Ethereum transaction cited on the Base platform',
+  { functionName: 'report_pathogen', args: ['sec-binding-3', '0x5F259D0b76665c337c6104145894F4D1D2758B8c', 'EVM_TX_BASE', EULER_TX], value: GEN }, UNBOUND);
 
 console.log('\n=== 6. report_pathogen: malformed target address ===');
 for (const a of ['not-an-address', '0x1234', '0x' + 'a'.repeat(39), '0x' + 'z'.repeat(40), '']) {
-  await mustReject(`target_agent ${JSON.stringify(a.slice(0, 22))}`, { functionName: 'report_pathogen', args: ['sec-a', a, 'EVM_ADDRESS', legit.traceId], value: GEN }, /EXPECTED|invalid|address|Missing|execution failed/i);
+  await mustReject(`target_agent ${JSON.stringify(a.slice(0, 22))}`, { functionName: 'report_pathogen', args: ['sec-a', a, legit.platform, legit.traceId], value: GEN }, /EXPECTED|invalid|address|Missing|execution failed/i);
 }
 
 console.log('\n=== 7. Bond / value enforcement ===');
-await mustReject('report_pathogen with zero bond', { functionName: 'report_pathogen', args: ['sec-b1', TARGET, 'EVM_ADDRESS', legit.traceId], value: 0n }, EXP);
-await mustReject('report_pathogen with 1 atto under the 0.1 GEN bond', { functionName: 'report_pathogen', args: ['sec-b2', TARGET, 'EVM_ADDRESS', legit.traceId], value: GEN / 10n - 1n }, EXP);
-await mustReject('appeal_quarantine with zero bond', { functionName: 'appeal_quarantine', args: [TARGET, legit.traceId, 'EVM_ADDRESS'], value: 0n }, EXP);
+await mustReject('report_pathogen with zero bond', { functionName: 'report_pathogen', args: ['sec-b1', TARGET, legit.platform, legit.traceId], value: 0n }, EXP);
+await mustReject('report_pathogen with 1 atto under the 0.1 GEN bond', { functionName: 'report_pathogen', args: ['sec-b2', TARGET, legit.platform, legit.traceId], value: GEN / 10n - 1n }, EXP);
+await mustReject('file_appeal with zero bond', { functionName: 'file_appeal', args: ['sec-b3', legit.traceId, legit.platform], value: 0n }, EXP);
 await mustReject('fund_bounty_pool with zero value', { functionName: 'fund_bounty_pool', value: 0n }, EXP);
 
 console.log('\n=== 8. State-machine guards (attacks against non-existent state) ===');
-await mustReject('appeal_quarantine against a never-quarantined agent', { functionName: 'appeal_quarantine', args: [TARGET, legit.traceId, 'EVM_ADDRESS'], value: GEN }, EXP);
+await mustReject('file_appeal against a report with no disputable escrow', { functionName: 'file_appeal', args: ['no-such-report', legit.traceId, legit.platform], value: GEN }, EXP);
+await mustReject('resolve_appeal on a non-existent appeal', { functionName: 'resolve_appeal', args: ['no-such-appeal'] }, EXP);
+await mustReject('expire_appeal on a non-existent appeal', { functionName: 'expire_appeal', args: ['no-such-appeal'] }, EXP);
 await mustReject('recover_agent against a never-quarantined agent', { functionName: 'recover_agent', args: [TARGET] }, EXP);
 await mustReject('evaluate_pathogen on a non-existent report', { functionName: 'evaluate_pathogen', args: ['no-such-report'] }, EXP);
 await mustReject('reclaim_expired_report_bond on a non-existent report', { functionName: 'reclaim_expired_report_bond', args: ['no-such-report'] }, EXP);
 await mustReject("reclaim_expired_report_bond against someone else's pending report", { functionName: 'reclaim_expired_report_bond', args: ['sec-other'] }, EXP);
 
 console.log('\n=== 9. Escrow: disputed payouts cannot be moved early ===');
-await mustReject('release_escrow on a report with no escrow', { functionName: 'release_escrow', args: ['no-such-report'] }, EXP);
-await mustReject('release_escrow with an empty report id', { functionName: 'release_escrow', args: [''] }, EXP);
+await mustReject('claim_payout on a report with no escrow', { functionName: 'claim_payout', args: ['no-such-report'] }, EXP);
+await mustReject('claim_payout with an empty report id', { functionName: 'claim_payout', args: [''] }, EXP);
+await mustReject('release_escrow (alias) on a report with no escrow', { functionName: 'release_escrow', args: ['no-such-report'] }, EXP);
 await mustRead('get_escrow on an unknown report reports absence, not an error',
   { functionName: 'get_escrow', args: ['no-such-report'] },
   (o) => { const r = o instanceof Map ? Object.fromEntries(o) : o;
@@ -122,8 +127,8 @@ await mustRead('get_escrow on an unknown report reports absence, not an error',
 await mustRead('locked escrow is counted in the registry overview',
   { functionName: 'get_registry_overview' },
   (o) => { const r = o instanceof Map ? Object.fromEntries(o) : o;
-           const has = 'locked_escrow_atto' in r && 'total_escrows' in r;
-           return { ok: has, note: `locked_escrow_atto=${r.locked_escrow_atto} total_escrows=${r.total_escrows}` }; });
+           const has = 'locked_escrow_atto' in r && 'total_escrows' in r && 'pending_appeal_bonds_atto' in r;
+           return { ok: has, note: `locked_escrow_atto=${r.locked_escrow_atto} pending_appeal_bonds_atto=${r.pending_appeal_bonds_atto}` }; });
 
 console.log('\n=== 10. Pagination bounds / DoS ===');
 await mustRead('limit clamped at MAX_PAGE_LIMIT=50 (request 10^9)', { functionName: 'list_reports_paginated', args: [0, 1_000_000_000] },

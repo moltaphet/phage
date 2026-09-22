@@ -4,7 +4,8 @@
 // spends: it escrows the 0.1 GEN reporter bond, runs the non-deterministic consensus
 // engine for real, and lets the resulting tier decide whether the bond is refunded,
 // slashed, or paid out as a bounty. That is the only way to prove the consensus path
-// works on-chain — `simulateWriteContract` never reaches `run_nondet`.
+// works on-chain — `simulateWriteContract` runs the call on one node and commits
+// nothing, so it never shows validators agreeing.
 //
 // It drives the contract through the frontend's own write helpers (`reportPathogen`,
 // `evaluatePathogen`, `waitForReceipt`), so the fee derivation and receipt handling
@@ -16,11 +17,13 @@
 //     node --experimental-strip-types --import ./scripts/ts-resolve-register.mjs \
 //     ./scripts/live-cycle.mjs [--dry] [--report-id <id>] [--platform <p>] [--trace <id>]
 //
-// The default platform is EVM_ADDRESS, whose evidence identifier *is* the reported
-// target — the contract requires them to match — and which resolves to a live record
-// for any address. Pass `--platform EVM_TX --trace 0x<64 hex>` to drive it from a
-// transaction instead; the target must then be a party to that transaction, which the
-// contract checks before the model is consulted.
+// The defaults cite a real incident: the Euler Finance exploit transaction of
+// 2023-03-13 on Ethereum, reported against its sender, which Blockscout tags as
+// "Euler Finance Exploiter 3" / ATTACKER. report_pathogen fetches that transaction
+// from eth.blockscout.com and requires the target to be one of its parties before it
+// takes the bond; a transaction the target is not party to reverts the filing with
+// ERR_UNBOUND_EVIDENCE. Pass `--target`, `--platform` (EVM_TX / EVM_TX_BASE) and
+// `--trace 0x<64 hex>` to cite a different incident.
 import { createClient } from 'genlayer-js';
 import { privateKeyToAccount } from 'viem/accounts';
 import { PHAGE_CONTRACT_ADDRESS, STUDIO_DEV_CHAIN, STUDIONET_RPC } from '../src/lib/contract.ts';
@@ -44,12 +47,10 @@ if (!PK) {
 }
 
 const REPORT_ID = flag('report-id', 'live-cycle-1');
-// A burn address: quarantining it is the intended effect and affects nobody real.
-const TARGET = flag('target', '0x000000000000000000000000000000000000dEaD');
-const PLATFORM = flag('platform', 'EVM_ADDRESS');
-// EVM_ADDRESS evidence has to name the target, so the trace defaults to the target
-// itself. A transaction platform needs a real 32-byte hash instead.
-const TRACE_ID = flag('trace', PLATFORM === 'EVM_ADDRESS' ? TARGET : '');
+// The Euler exploiter EOA: a public, already-flagged attacker address.
+const TARGET = flag('target', '0x5F259D0b76665c337c6104145894F4D1D2758B8c');
+const PLATFORM = flag('platform', 'EVM_TX');
+const TRACE_ID = flag('trace', '0xc310a0affe2169d1f6feec1c63dbc7f7c62a887fa48795d327d4d2da2d6b111d');
 const BOND = 100_000_000_000_000_000n; // 0.1 GEN — MIN_REPORTER_BOND
 const J = (_k, v) => (typeof v === 'bigint' ? v.toString() : v instanceof Map ? Object.fromEntries(v) : v);
 
@@ -112,7 +113,7 @@ if (DRY) {
   process.exit(0);
 }
 
-const reportHash = await step('report_pathogen (escrow 0.1 GEN)', () =>
+const reportHash = await step('report_pathogen (binding check + 0.1 GEN bond)', () =>
   fe.reportPathogen(client, {
     reportId: REPORT_ID,
     targetAgent: TARGET,
@@ -124,6 +125,7 @@ const reportHash = await step('report_pathogen (escrow 0.1 GEN)', () =>
 console.log(`   tx ${reportHash}\n`);
 await step('wait for receipt', () => fe.waitForReceipt(client, reportHash));
 const pending = await step('read report (expect PENDING)', () => fe.getReport(REPORT_ID));
+console.log(`   >>> evidence binding: target is "${pending?.evidence_binding}" of ${TRACE_ID}\n`);
 
 // Phase 2 — the actual point of this script. `evaluate_pathogen` fetches the trace,
 // runs leader_fn, and reaches consensus through run_nondet. This is the one call that
@@ -169,7 +171,8 @@ if (escrow.exists) {
   console.log(`   status           ${escrow.status}`);
   console.log(`   held             ${escrow.bond_gen} GEN bond + ${escrow.payout_gen} GEN bounty`);
   console.log(`   locked until     ${escrow.locked_until_iso} (releasable now: ${escrow.is_releasable})`);
-  console.log(`   release with     release_escrow("${REPORT_ID}") once the window closes\n`);
+  console.log(`   appeal with      file_appeal("${REPORT_ID}", <tx hash>, "EVM_TX") then resolve_appeal(<id>)`);
+  console.log(`   release with     claim_payout("${REPORT_ID}") once the window closes, no appeal pending\n`);
 } else {
   console.log(`── no escrow opened for ${REPORT_ID} (the verdict carried no quarantine)\n`);
 }

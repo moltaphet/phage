@@ -51,20 +51,19 @@ for (const [fn, args] of VIEWS) {
   }
 }
 
-console.log('\n=== PHASE B: write methods, dry-run (all 9, report_pathogen twice) ===');
+console.log('\n=== PHASE B: write methods, dry-run (all 13) ===');
 // Values mirror what the UI sends. The point is not that the call succeeds —
 // most must revert on a fresh contract — but that the node ACCEPTS the calldata
 // and reaches the contract, which is what a v1 client could not do.
-//
-// EVM_ADDRESS evidence must name the target, so `probe` is its own trace: a
-// deliberately mismatched pair would revert on the binding guard instead, and this
-// phase is about the calldata reaching the contract at all.
+const TX = '0x' + 'a'.repeat(64);
 const WRITES = [
   ['fund_bounty_pool', [], 10_000_000_000_000_000n],
-  ['report_pathogen', ['fe-test-1', probe, 'EVM_ADDRESS', probe], 10_000_000_000_000_000n],
-  ['report_pathogen', ['fe-test-tx', probe, 'EVM_TX', '0x' + 'a'.repeat(64)], 10_000_000_000_000_000n],
+  ['report_pathogen', ['fe-test-tx', probe, 'EVM_TX', TX], 10_000_000_000_000_000n],
   ['evaluate_pathogen', ['fe-test-1'], 0n],
-  ['appeal_quarantine', [probe, probe, 'EVM_ADDRESS'], 10_000_000_000_000_000n],
+  ['file_appeal', ['fe-test-1', TX, 'EVM_TX'], 200_000_000_000_000_000n],
+  ['resolve_appeal', ['appeal-fe-test-1-1'], 0n],
+  ['expire_appeal', ['appeal-fe-test-1-1'], 0n],
+  ['claim_payout', ['fe-test-1'], 0n],
   ['release_escrow', ['fe-test-1'], 0n],
   ['recover_agent', [probe], 0n],
   ['reclaim_expired_report_bond', ['fe-test-1'], 0n],

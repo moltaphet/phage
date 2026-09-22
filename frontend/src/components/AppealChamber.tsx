@@ -19,15 +19,10 @@ interface AppealChamberProps {
 }
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+// Mirrors the contract's `_validate_trace_id`: every platform takes a transaction
+// hash. The transaction must also involve the quarantined agent — proof about
+// someone else rejects the appeal and forfeits the bond.
 const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/;
-// Mirrors the contract's `_validate_trace_id`. The evidence must also *name* the
-// quarantined agent — an appeal citing a record about someone else is rejected, so
-// the form says so before the user pays the bond.
-const TRACE_RE: Record<Platform, RegExp> = {
-  EVM_TX: TX_HASH_RE,
-  EVM_TX_BASE: TX_HASH_RE,
-  EVM_ADDRESS: ADDRESS_RE,
-};
 
 export function AppealChamber({
   quarantinedAgents,
@@ -58,12 +53,8 @@ export function AppealChamber({
       setErrorMsg('Select or enter a valid 40-character target agent address.');
       return;
     }
-    if (!TRACE_RE[platform].test(proofTraceId.trim())) {
-      setErrorMsg(
-        platform === 'EVM_ADDRESS'
-          ? 'EVM_ADDRESS counter-evidence must be the quarantined agent address itself.'
-          : 'Enter the 0x-prefixed 32-byte transaction hash the agent is a party to.',
-      );
+    if (!TX_HASH_RE.test(proofTraceId.trim())) {
+      setErrorMsg('Enter the 0x-prefixed 32-byte transaction hash the agent is a party to.');
       return;
     }
     if (!reason.trim() || reason.trim().length < 15) {
@@ -94,12 +85,12 @@ export function AppealChamber({
           <div>
             <h2 className="section-title">Appeal chamber</h2>
             <p className="section-copy">
-              Contest a false-positive quarantine with patched code or clean telemetry. Validators re-audit on-chain. If upheld, isolation lifts and the antibody is revoked.
+              Contest a false-positive quarantine with a transaction the agent is a party to. Filing freezes the reporter's payout until validators rule; if upheld, the reporter is slashed, isolation lifts and the antibody is revoked.
             </p>
           </div>
           <div style={{ textAlign: 'right' }}>
             <div className="label">Appeal bond</div>
-            <div className="bond-value" style={{ color: 'var(--cytoplasm)' }}>0.20 GEN</div>
+            <div className="bond-value" style={{ color: 'var(--cytoplasm)' }}>from 0.20 GEN</div>
           </div>
         </div>
 
@@ -167,11 +158,7 @@ export function AppealChamber({
               className="input mono"
               value={proofTraceId}
               onChange={(e) => setProofTraceId(e.target.value)}
-              placeholder={
-                platform === 'EVM_ADDRESS'
-                  ? '0x71C87050f443831F9Ac9B69B132b35a7455d5b7a'
-                  : '0x8c1e0f3d9a5b7c4e2f6a8d0b1c3e5f7092a4b6d8e0f2a4c6b8d0e2f4a6c8b0d2'
-              }
+              placeholder="0x8c1e0f3d9a5b7c4e2f6a8d0b1c3e5f7092a4b6d8e0f2a4c6b8d0e2f4a6c8b0d2"
             />
             <p className="help">{PLATFORM_IDENTIFIER_HINT[platform]}.</p>
           </div>
@@ -191,13 +178,13 @@ export function AppealChamber({
           </div>
 
           <p className="help">
-            Deposit 0.20 GEN. If consensus verifies remediation, the bond is refunded to your claimable vault, quarantine lifts, and the antibody is revoked. Rejected appeals forfeit the bond to protocol reserves.
+            Two transactions: filing posts the bond (0.20 GEN, doubling with each rejected appeal on the same report) and freezes the disputed payout; resolving runs consensus. Upheld: your bond is refunded, the reporter's bond is slashed and the bounty returns to the pool. Rejected: your bond is forfeit to reserves, and the window stays open 24h for a further appeal.
           </p>
 
           {walletConnected ? (
             <button type="submit" className="btn btn-cytoplasm btn-block" disabled={submitting}>
               {submitting ? <Loader2 size={16} className="spin" /> : <Send size={16} aria-hidden="true" />}
-              {submitting ? 'Running consensus on-chain…' : 'Submit appeal (0.20 GEN)'}
+              {submitting ? 'Filing and resolving on-chain…' : 'File and resolve appeal'}
             </button>
           ) : (
             <button type="button" className="btn btn-stain btn-block" onClick={onConnectWallet}>
@@ -225,16 +212,28 @@ export function AppealChamber({
                   <div className="cluster" style={{ gap: 8 }}>
                     <span className="hash">{app.appeal_id}</span>
                     <span className={`chip ${app.state === 'UPHELD' ? 'chip-ok' : 'chip-iso'}`}>
-                      {app.state === 'UPHELD' ? 'Upheld' : app.state === 'REJECTED' ? 'Rejected' : 'Pending'}
+                      {app.state === 'UPHELD'
+                        ? 'Upheld'
+                        : app.state === 'REJECTED'
+                          ? 'Rejected'
+                          : app.state === 'EXPIRED'
+                            ? 'Expired'
+                            : 'Under appeal'}
                     </span>
                     <span className="chip">{app.platform}</span>
                   </div>
-                  <p className="hash" style={{ marginTop: 8 }}>Agent {shortHex(app.target_agent, 10, 8)}</p>
+                  <p className="hash" style={{ marginTop: 8 }}>
+                    Agent {shortHex(app.target_agent, 10, 8)} · report {app.report_id}
+                  </p>
                   <p className="help" style={{ marginTop: 4 }}>Proof: {app.proof_trace_id}</p>
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontWeight: 700 }}>
-                    {app.state === 'UPHELD' ? `+${app.appeal_bond_gen} GEN refunded` : `−${app.appeal_bond_gen} GEN forfeited`}
+                    {app.state === 'REJECTED'
+                      ? `−${app.appeal_bond_gen} GEN forfeited`
+                      : app.state === 'PENDING'
+                        ? `${app.appeal_bond_gen} GEN held`
+                        : `+${app.appeal_bond_gen} GEN refunded`}
                   </div>
                   <div className="help">{formatIso(app.timestamp_iso)}</div>
                 </div>

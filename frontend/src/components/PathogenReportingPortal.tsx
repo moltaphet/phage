@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Info, Loader2, Lock, Send } from 'lucide-react';
 import { getRequiredReporterBondGen } from '../lib/genlayer';
-import { PLATFORM_IDENTIFIER_HINT, PLATFORM_LABELS, VALID_PLATFORMS } from '../lib/contract';
+import { PLATFORM_IDENTIFIER_HINT, PLATFORM_LABELS, PLATFORM_SOURCE, VALID_PLATFORMS } from '../lib/contract';
 import type { Platform } from '../lib/contract';
 
 interface PathogenReportingPortalProps {
@@ -18,15 +18,10 @@ interface PathogenReportingPortalProps {
 }
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+// Kept in step with the contract's own `_validate_trace_id`: every platform takes a
+// 32-byte transaction hash. The contract is still the authority — this only turns
+// a rejected transaction into an inline message.
 const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/;
-// Kept in step with the contract's own `_validate_trace_id`, so anything the form
-// accepts the chain accepts too. The contract is still the authority — this only
-// turns a rejected transaction into an inline message.
-const TRACE_RE: Record<Platform, RegExp> = {
-  EVM_TX: TX_HASH_RE,
-  EVM_TX_BASE: TX_HASH_RE,
-  EVM_ADDRESS: ADDRESS_RE,
-};
 
 export function PathogenReportingPortal({
   initialTarget,
@@ -43,12 +38,7 @@ export function PathogenReportingPortal({
   const [requiredBond, setRequiredBond] = useState('0.10');
   const [bondLoading, setBondLoading] = useState(false);
 
-  // EVM_ADDRESS evidence *is* the target address, so the identifier field is not the
-  // user's to fill: the contract rejects the report unless the two match exactly. The
-  // value is derived during render rather than synced into state by an effect, so the
-  // two fields cannot drift apart for a frame.
-  const addressIsTheEvidence = platform === 'EVM_ADDRESS';
-  const evidenceId = addressIsTheEvidence ? targetAgent.trim() : traceId.trim();
+  const evidenceId = traceId.trim();
 
   // Prefill when navigated here from the inspector with a target.
   useEffect(() => {
@@ -89,12 +79,8 @@ export function PathogenReportingPortal({
       setFormError('Enter a valid 40-character hexadecimal address (0x…).');
       return;
     }
-    if (!TRACE_RE[platform].test(evidenceId)) {
-      setFormError(
-        addressIsTheEvidence
-          ? 'EVM_ADDRESS evidence must be the target address itself — check the suspect address field.'
-          : 'Enter the 0x-prefixed 32-byte transaction hash the target is a party to.',
-      );
+    if (!TX_HASH_RE.test(evidenceId)) {
+      setFormError('Enter the 0x-prefixed 32-byte transaction hash the target is a party to.');
       return;
     }
     if (!description.trim() || description.trim().length < 15) {
@@ -173,26 +159,22 @@ export function PathogenReportingPortal({
               ))}
             </select>
             <p className="help">
-              Where validators fetch the incident. Each source is checked against the target
-              before it is read, so evidence that does not name the suspect is rejected.
+              Validators fetch the incident from {PLATFORM_SOURCE[platform]}. Filing reverts
+              (ERR_UNBOUND_EVIDENCE, no bond taken) unless the transaction names the suspect
+              as sender, recipient or created contract.
             </p>
           </div>
           <div className="field">
             <label className="label" htmlFor="trace">
-              {addressIsTheEvidence ? 'Evidence address' : 'Transaction hash'}{' '}
+              Transaction hash{' '}
               <span className="req">*</span>
             </label>
             <input
               id="trace"
               className="input mono"
-              value={evidenceId}
+              value={traceId}
               onChange={(e) => setTraceId(e.target.value)}
-              placeholder={
-                addressIsTheEvidence
-                  ? '0x71C87050f443831F9Ac9B69B132b35a7455d5b7a'
-                  : '0x8c1e0f3d9a5b7c4e2f6a8d0b1c3e5f7092a4b6d8e0f2a4c6b8d0e2f4a6c8b0d2'
-              }
-              readOnly={addressIsTheEvidence}
+              placeholder="0x8c1e0f3d9a5b7c4e2f6a8d0b1c3e5f7092a4b6d8e0f2a4c6b8d0e2f4a6c8b0d2"
               aria-describedby="trace-help"
             />
             <p className="help" id="trace-help">

@@ -64,18 +64,18 @@ export function AboutSection() {
               </tr>
               <tr>
                 <td>Cellular quarantine</td>
-                <td className="mono">quarantine_agent</td>
+                <td className="mono">evaluate_pathogen</td>
                 <td>Isolation for 24h or 7 days</td>
               </tr>
               <tr>
                 <td>Antibody memory</td>
-                <td className="mono">mint_antibody</td>
+                <td className="mono">evaluate_pathogen (critical)</td>
                 <td>Network-wide payload rejection</td>
               </tr>
               <tr>
                 <td>Autoimmune check</td>
-                <td className="mono">appeal_quarantine</td>
-                <td>Patch proof lifts a false positive</td>
+                <td className="mono">file_appeal / resolve_appeal</td>
+                <td>Bound counter-proof lifts a false positive and slashes the reporter</td>
               </tr>
             </tbody>
           </table>

@@ -147,6 +147,7 @@ function mapReport(raw: unknown): PathogenReport {
     target_agent: asString(r.target_agent),
     platform: asString(r.platform),
     trace_id: asString(r.trace_id),
+    evidence_binding: asString(r.evidence_binding),
     bond_amount_gen: attoToGen(asString(r.bond_atto)),
     state: (asString(r.status) || 'PENDING') as PathogenReport['state'],
     evaluated_tier: asString(r.tier),
@@ -163,6 +164,7 @@ function mapAppeal(raw: unknown): AppealRecord {
   const ts = asNumber(r.resolved_at_utc) || asNumber(r.created_at_utc);
   return {
     appeal_id: asString(r.appeal_id),
+    report_id: asString(r.report_id),
     target_agent: asString(r.target_agent),
     appellant: asString(r.appellant),
     appeal_bond_gen: attoToGen(asString(r.bond_atto)),
@@ -189,6 +191,10 @@ function mapEscrow(raw: unknown): EscrowRecord {
     status: (asString(r.status) || 'NONE') as EscrowStatus,
     created_at_utc: asNumber(r.created_at_utc),
     is_releasable: asBool(r.is_releasable),
+    is_appealable: asBool(r.is_appealable),
+    failed_appeals: asNumber(r.failed_appeals),
+    active_appeal_id: asString(r.active_appeal_id),
+    required_appeal_bond_atto: asString(r.required_appeal_bond_atto) || '0',
   };
 }
 
@@ -226,6 +232,7 @@ export async function loadProtocolState(): Promise<ProtocolState> {
     total_deposited_gen: attoToGen(asString(overview.total_deposited_atto)),
     total_claimed_gen: attoToGen(asString(overview.total_claimed_atto)),
     locked_escrow_gen: attoToGen(asString(overview.locked_escrow_atto)),
+    pending_appeal_bonds_gen: attoToGen(asString(overview.pending_appeal_bonds_atto)),
     total_escrows: asNumber(overview.total_escrows),
     total_quarantines_active: activeQuarantines,
     total_antibodies_minted: asNumber(overview.total_antibodies) || antibodies.length,
@@ -353,15 +360,25 @@ export function evaluatePathogen(client: GenClient, reportId: string): Promise<s
   return write(client, { functionName: 'evaluate_pathogen', args: [reportId] });
 }
 
-export function appealQuarantine(
+/**
+ * File an appeal against one report's quarantine verdict. Deterministic: it only
+ * posts the bond and moves the report's escrow to UNDER_APPEAL, which freezes the
+ * payout. The verdict comes from `resolveAppeal`.
+ */
+export function fileAppeal(
   client: GenClient,
-  params: { targetAgent: string; proofTraceId: string; platform: string; bondAtto: bigint },
+  params: { reportId: string; proofTraceId: string; platform: string; bondAtto: bigint },
 ): Promise<string> {
   return write(client, {
-    functionName: 'appeal_quarantine',
-    args: [params.targetAgent, params.proofTraceId, params.platform],
+    functionName: 'file_appeal',
+    args: [params.reportId, params.proofTraceId, params.platform],
     value: params.bondAtto,
   });
+}
+
+/** Run appeal consensus and enforce the outcome. Permissionless. */
+export function resolveAppeal(client: GenClient, appealId: string): Promise<string> {
+  return write(client, { functionName: 'resolve_appeal', args: [appealId] });
 }
 
 export function recoverAgent(client: GenClient, targetAgent: string): Promise<string> {
@@ -379,14 +396,14 @@ export function withdraw(client: GenClient): Promise<string> {
 /**
  * Release a matured escrow to the reporter it was opened for. Permissionless: the
  * contract only ever pays the recorded reporter, so anyone can trigger it once the
- * appeal window has closed.
+ * appeal window has closed and no appeal is pending.
  */
-export function releaseEscrow(client: GenClient, reportId: string): Promise<string> {
-  return write(client, { functionName: 'release_escrow', args: [reportId] });
+export function claimPayout(client: GenClient, reportId: string): Promise<string> {
+  return write(client, { functionName: 'claim_payout', args: [reportId] });
 }
 
-// Await a GenLayer transaction receipt. On-chain LLM consensus (evaluate_pathogen /
-// appeal_quarantine) can take a while, so we poll patiently rather than fabricate an
+// Await a GenLayer transaction receipt. On-chain LLM consensus (report_pathogen's
+// binding check, evaluate_pathogen, resolve_appeal) can take a while, so we poll patiently rather than fabricate an
 // outcome.
 //
 // Reaching ACCEPTED is not the same as succeeding: a transaction that finalizes with
@@ -406,13 +423,6 @@ export async function waitForReceipt(client: GenClient, hash: string): Promise<v
   if (!isSuccessful(tx)) {
     throw new Error(describeError(tx));
   }
-}
-
-// Reconstruct the deterministic appeal id the contract assigns:
-//   appeal_{target_hex[:10]}_{len(appeal_ids)+1}
-// target_hex is the lowercase 0x-prefixed address; [:10] keeps 0x + 8 hex chars.
-export function deriveAppealId(targetAgent: string, appealIndex: number): string {
-  return `appeal_${targetAgent.toLowerCase().slice(0, 10)}_${appealIndex}`;
 }
 
 export function isCriticalTier(tier: string): boolean {

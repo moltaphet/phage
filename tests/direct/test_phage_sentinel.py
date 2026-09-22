@@ -14,6 +14,7 @@ from conftest import (
     mock_tx_telemetry,
     mock_pathogen_verdict,
     mock_appeal_verdict,
+    serve_incident,
 )
 
 # ---------------------------------------------------------------------------
@@ -25,18 +26,21 @@ def _report_pathogen(
     reporter,
     target_agent,
     report_id="rep-1",
-    platform="EVM_ADDRESS",
+    platform="EVM_TX",
     trace_id=None,
     bond=MIN_REPORTER_BOND,
+    bind=True,
 ):
-    """Register a report.
+    """Register a report citing a transaction the target is a party to.
 
-    Defaults to EVM_ADDRESS, whose evidence identifier *is* the target address, so the
-    trace defaults to the target's own hex. Pass an EVM_TX platform with an explicit
-    32-byte hash when a test needs two distinct traces against the same target.
+    Filing fetches the cited transaction and proves the target is a party to it, so by
+    default a bound incident is served first. The trace defaults to a hash unique to the
+    report and target. Pass `bind=False` to file against whatever is already mocked.
     """
     if trace_id is None:
-        trace_id = addr_hex(target_agent)
+        trace_id = tx_hash(f"{report_id}|{addr_hex(target_agent)}")
+    if bind:
+        serve_incident(direct_vm, target_agent)
     direct_vm.sender = reporter
     direct_vm.value = bond
     contract.report_pathogen(report_id, target_agent, platform, trace_id)
@@ -50,6 +54,23 @@ def _warp_hours(direct_vm, hours: float) -> None:
         _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=hours)
     ).isoformat().replace("+00:00", "Z")
     direct_vm.warp(future)
+
+
+def _appeal_quarantine(contract, direct_vm, target, proof=None, platform="EVM_TX"):
+    """File an appeal against the report behind `target`'s quarantine, then resolve it.
+
+    Uses the sender, value and mocks the caller has already set: the value is the appeal
+    bond, and the current web mock is what the arbiter fetches as the appeal proof.
+    Returns the appeal id.
+    """
+    report_id = contract.get_quarantine_info(target)["last_report_id"]
+    if proof is None:
+        proof = tx_hash(f"appeal-proof|{report_id}")
+    contract.file_appeal(report_id, proof, platform)
+    appeal_id = contract.get_escrow(report_id)["active_appeal_id"]
+    direct_vm.value = 0
+    contract.resolve_appeal(appeal_id)
+    return appeal_id
 
 
 def _locked_escrow_total(contract) -> int:
@@ -104,7 +125,6 @@ def test_report_pathogen_success_all_platforms(
     contract = direct_deploy(CONTRACT_PATH)
 
     platforms_and_traces = [
-        ("EVM_ADDRESS", addr_hex(direct_bob)),
         ("EVM_TX", tx_hash("platform-tx-1")),
         ("EVM_TX_BASE", tx_hash("platform-tx-2")),
     ]
@@ -116,10 +136,11 @@ def test_report_pathogen_success_all_platforms(
         assert rep["status"] == "PENDING"
         assert rep["platform"] == platform
         assert rep["trace_id"] == trace_id
+        assert rep["evidence_binding"] == "from"
 
     overview = contract.get_registry_overview()
-    assert overview["total_reports"] == 3
-    assert overview["total_deposited_atto"] == str(3 * MIN_REPORTER_BOND)
+    assert overview["total_reports"] == 2
+    assert overview["total_deposited_atto"] == str(2 * MIN_REPORTER_BOND)
 
 
 def test_report_pathogen_bond_below_minimum_rejected(
@@ -130,7 +151,7 @@ def test_report_pathogen_bond_below_minimum_rejected(
     direct_vm.value = MIN_REPORTER_BOND - 1
 
     with pytest.raises(Exception) as exc:
-        contract.report_pathogen("rep-low-bond", direct_bob, "EVM_ADDRESS", addr_hex(direct_bob))
+        contract.report_pathogen("rep-low-bond", direct_bob, "EVM_TX", tx_hash("low-bond"))
     assert "minimum reporter bond is 0.1 GEN" in str(exc.value)
 
 
@@ -142,7 +163,7 @@ def test_report_pathogen_empty_report_id_rejected(
     direct_vm.value = MIN_REPORTER_BOND
 
     with pytest.raises(Exception) as exc:
-        contract.report_pathogen("", direct_bob, "EVM_ADDRESS", addr_hex(direct_bob))
+        contract.report_pathogen("", direct_bob, "EVM_TX", tx_hash("empty-id"))
     assert "report_id cannot be empty" in str(exc.value)
 
 
@@ -273,22 +294,6 @@ def test_url_validation_accepts_valid_tx_hash(
     rep = contract.get_report("rep-good-tx")
     assert rep["trace_id"] == valid_hash
     assert rep["platform"] == "EVM_TX"
-
-
-def test_evm_address_trace_must_equal_target(
-    direct_vm, direct_deploy, direct_alice, direct_bob
-):
-    """EVM_ADDRESS evidence is the target's own record, so a mismatched identifier is
-    refused up front rather than left for the consensus engine to reject."""
-    contract = direct_deploy(CONTRACT_PATH)
-    direct_vm.sender = direct_alice
-    direct_vm.value = MIN_REPORTER_BOND
-
-    with pytest.raises(Exception) as exc:
-        contract.report_pathogen(
-            "rep-mismatch", direct_bob, "EVM_ADDRESS", addr_hex(direct_alice)
-        )
-    assert "must name the reported target" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -500,13 +505,13 @@ def test_solvency_invariant_multi_cycle(
     assert "zero claimable balance" in str(exc.value)
 
     with pytest.raises(Exception) as esc_locked:
-        contract.release_escrow("rep-solv-1")
+        contract.claim_payout("rep-solv-1")
     assert "escrow is locked until the appeal window closes" in str(esc_locked.value)
 
     # Past the 7-day quarantine the window has closed with no appeal, so the escrow
     # matures into a claimable balance.
     _warp_hours(direct_vm, 24 * 8)
-    contract.release_escrow("rep-solv-1")
+    contract.claim_payout("rep-solv-1")
 
     assert _locked_escrow_total(contract) == 0
     assert contract.get_escrow("rep-solv-1")["status"] == "RELEASED"
@@ -543,7 +548,8 @@ def test_replay_rejection_same_incident_digest_reverts(
     direct_vm, direct_deploy, direct_alice, direct_bob
 ):
     contract = direct_deploy(CONTRACT_PATH)
-    _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-rep-1")
+    trace = tx_hash("replayed-incident")
+    _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-rep-1", trace_id=trace)
 
     mock_telemetry_success(direct_vm, {"exploit_detected": True, "anomaly_score": 90}, target_hex=direct_bob)
     mock_pathogen_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL")
@@ -551,7 +557,7 @@ def test_replay_rejection_same_incident_digest_reverts(
 
     # Second report with identical target and trace_id reverts upfront in report_pathogen
     with pytest.raises(Exception) as exc:
-        _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-rep-2")
+        _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-rep-2", trace_id=trace)
     assert "replay rejected" in str(exc.value)
 
 
@@ -560,14 +566,15 @@ def test_replay_protection_cross_wallet_rejection(
 ):
     contract = direct_deploy(CONTRACT_PATH)
     # Alice reports and evaluates trace-cross on Bob
-    _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-cw-1")
+    trace = tx_hash("cross-wallet-incident")
+    _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-cw-1", trace_id=trace)
     mock_telemetry_success(direct_vm, {"exploit_detected": True, "anomaly_score": 90}, target_hex=direct_bob)
     mock_pathogen_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL")
     contract.evaluate_pathogen("rep-cw-1")
 
     # Charlie attempts to report the EXACT same trace on Bob using a DIFFERENT wallet
     with pytest.raises(Exception) as exc:
-        _report_pathogen(contract, direct_vm, direct_charlie, direct_bob, "rep-cw-2")
+        _report_pathogen(contract, direct_vm, direct_charlie, direct_bob, "rep-cw-2", trace_id=trace)
     assert "replay rejected" in str(exc.value)
 
 
@@ -613,7 +620,7 @@ def test_appeal_quarantine_success_lifts_quarantine(
     mock_telemetry_success(direct_vm, {"proof": "healthy execution logs", "anomaly_score": 0}, target_hex=direct_bob)
     mock_appeal_verdict(direct_vm, tier="TIER_BENIGN_NOISE", rationale="Target is completely nominal.")
 
-    contract.appeal_quarantine(direct_bob, addr_hex(direct_bob))
+    _appeal_quarantine(contract, direct_vm, direct_bob)
 
     # Bob's quarantine is immediately lifted!
     assert contract.is_quarantined(direct_bob) is False
@@ -653,7 +660,7 @@ def test_appeal_quarantine_failed_slashes_appeal_bond(
     mock_telemetry_success(direct_vm, {"exploit_detected": True, "anomaly_score": 99}, target_hex=direct_bob)
     mock_appeal_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL", rationale="Threat is active and genuine.")
 
-    contract.appeal_quarantine(direct_bob, addr_hex(direct_bob))
+    _appeal_quarantine(contract, direct_vm, direct_bob)
 
     # Bob remains quarantined
     assert contract.is_quarantined(direct_bob) is True
@@ -679,7 +686,7 @@ def test_escalated_reporter_bond_after_defended_appeal(
     direct_vm.value = APPEAL_BOND
     mock_telemetry_success(direct_vm, {"anomaly_score": 0}, target_hex=direct_bob)
     mock_appeal_verdict(direct_vm, tier="TIER_BENIGN_NOISE")
-    contract.appeal_quarantine(direct_bob, addr_hex(direct_bob))
+    _appeal_quarantine(contract, direct_vm, direct_bob)
 
     # Defended count is now 1 -> Required reporter bond is 2x MIN_REPORTER_BOND (0.2 GEN)
     assert contract.get_defended_appeals_count(direct_bob) == 1
@@ -838,6 +845,7 @@ def test_pending_replay_race_condition_rejection(
     direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
 ):
     contract = direct_deploy(CONTRACT_PATH)
+    trace = tx_hash("raced-incident")
 
     # Alice submits a pathogen report; it remains in REPORT_PENDING state
     _report_pathogen(
@@ -846,6 +854,7 @@ def test_pending_replay_race_condition_rejection(
         direct_alice,
         direct_bob,
         "rep-race-1",
+        trace_id=trace,
     )
     rep1 = contract.get_report("rep-race-1")
     assert rep1["status"] == "PENDING"
@@ -859,6 +868,7 @@ def test_pending_replay_race_condition_rejection(
             direct_charlie,
             direct_bob,
             "rep-race-2",
+            trace_id=trace,
         )
     assert "already submitted or evaluated (replay rejected)" in str(exc.value)
 
@@ -878,6 +888,7 @@ def test_pending_replay_race_condition_rejection(
             direct_charlie,
             direct_bob,
             "rep-race-3",
+            trace_id=trace,
         )
     assert "already submitted or evaluated (replay rejected)" in str(exc2.value)
 
@@ -919,7 +930,7 @@ def test_appeal_slashing_with_bounty_reclaim_and_reserve_slashing(
     direct_vm.value = APPEAL_BOND
     mock_telemetry_success(direct_vm, {"proof": "healthy execution logs", "anomaly_score": 0}, target_hex=direct_bob)
     mock_appeal_verdict(direct_vm, tier="TIER_BENIGN_NOISE", rationale="Target is completely nominal.")
-    contract.appeal_quarantine(direct_bob, addr_hex(direct_bob))
+    _appeal_quarantine(contract, direct_vm, direct_bob)
 
     # Quarantine is lifted
     assert contract.is_quarantined(direct_bob) is False
@@ -935,7 +946,7 @@ def test_appeal_slashing_with_bounty_reclaim_and_reserve_slashing(
     assert contract.get_claimable_balance(direct_alice) == "0"
     assert contract.get_escrow("rep-reclaim-1")["status"] == "SLASHED"
     with pytest.raises(Exception) as gone:
-        contract.release_escrow("rep-reclaim-1")
+        contract.claim_payout("rep-reclaim-1")
     assert "already settled" in str(gone.value)
 
     overview2 = contract.get_registry_overview()
@@ -978,7 +989,7 @@ def test_appeal_slashing_partial_claimable_resilience(
     direct_vm.value = APPEAL_BOND
     mock_telemetry_success(direct_vm, {"anomaly_score": 0}, target_hex=direct_bob)
     mock_appeal_verdict(direct_vm, tier="TIER_BENIGN_NOISE")
-    contract.appeal_quarantine(direct_bob, addr_hex(direct_bob))
+    _appeal_quarantine(contract, direct_vm, direct_bob)
 
     # The bond is slashed into reserves in full, from escrow, with no partial-clawback
     # shortfall to worry about: the reporter never held it.
@@ -1092,7 +1103,7 @@ def test_antibody_lifecycle_revocation_on_upheld_appeal(
         tier="TIER_BENIGN_NOISE",
         rationale="Proof demonstrates nominal operation without compromise.",
     )
-    contract.appeal_quarantine(direct_bob, addr_hex(direct_bob))
+    _appeal_quarantine(contract, direct_vm, direct_bob)
 
     # Quarantine is lifted
     assert contract.is_quarantined(direct_bob) is False
@@ -1195,7 +1206,7 @@ def test_withdraw_claimable_alias_and_pure_pull(
     # claimable. Mature it first, then exercise the alias against a real balance.
     assert contract.get_claimable_balance(direct_alice) == "0"
     _warp_hours(direct_vm, 24 * 8)
-    contract.release_escrow("rep-pull-1")
+    contract.claim_payout("rep-pull-1")
 
     claimable = int(contract.get_claimable_balance(direct_alice))
     assert claimable > 0
@@ -1291,7 +1302,7 @@ def test_reporter_cannot_escape_appeal_penalty_by_withdrawing_first(
 
     # Nor can Alice release her own escrow early.
     with pytest.raises(Exception) as still_locked:
-        contract.release_escrow("rep-leak-1")
+        contract.claim_payout("rep-leak-1")
     assert "escrow is locked until the appeal window closes" in str(still_locked.value)
 
     # Charlie appeals successfully, and the penalty lands in full.
@@ -1299,7 +1310,7 @@ def test_reporter_cannot_escape_appeal_penalty_by_withdrawing_first(
     direct_vm.value = APPEAL_BOND
     mock_telemetry_success(direct_vm, {"anomaly_score": 0}, target_hex=direct_bob)
     mock_appeal_verdict(direct_vm, tier="TIER_BENIGN_NOISE")
-    contract.appeal_quarantine(direct_bob, addr_hex(direct_bob))
+    _appeal_quarantine(contract, direct_vm, direct_bob)
 
     assert contract.is_quarantined(direct_bob) is False
 
@@ -1354,7 +1365,7 @@ def test_critical_with_empty_bounty_pool_pays_zero_but_refunds_and_quarantines(
     assert antibodies[0]["is_active"] is True
 
     _warp_hours(direct_vm, 24 * 8)
-    contract.release_escrow("rep-nopool-1")
+    contract.claim_payout("rep-nopool-1")
     assert contract.get_claimable_balance(direct_alice) == str(MIN_REPORTER_BOND)
 
     overview = contract.get_registry_overview()
@@ -1428,29 +1439,206 @@ def test_get_claimable_balance_malformed_address_rejected(direct_vm, direct_depl
 # ---------------------------------------------------------------------------
 # 16. Evidence-to-Target Binding (steward remediation)
 # ---------------------------------------------------------------------------
+UNBOUND = "ERR_UNBOUND_EVIDENCE: incident telemetry does not prove relationship to target"
+PAYOUT_LOCKED = "ERR_PAYOUT_LOCKED: funds preserved until appeal resolution"
+
+
+def _assert_nothing_filed(contract):
+    ov = contract.get_registry_overview()
+    assert ov["total_reports"] == 0
+    assert ov["total_deposited_atto"] == "0"
+
+
+def test_reject_generic_unbound_github_metadata(
+    direct_vm, direct_deploy, direct_alice, direct_bob
+):
+    """The steward's finding, as a regression test: generic, unauthenticated repository
+    metadata is not incident telemetry and cannot be filed as evidence -- not through the
+    old platform name, and not smuggled through a transaction platform either, even when
+    the metadata happens to mention the target's address."""
+    contract = direct_deploy(CONTRACT_PATH)
+    direct_vm.sender = direct_alice
+    direct_vm.value = MIN_REPORTER_BOND
+
+    # The retired platforms no longer exist.
+    for retired in ("GITHUB_AUDIT", "EVM_ADDRESS", "SECURITY_FEED", "AGENT_RPC"):
+        with pytest.raises(Exception) as exc:
+            contract.report_pathogen("rep-gh", direct_bob, retired, tx_hash("gh"))
+        assert "invalid platform" in str(exc.value)
+
+    # A GitHub repository document served where a transaction was cited.
+    mock_telemetry_success(direct_vm, {
+        "id": 123456,
+        "full_name": "some-org/agent-framework",
+        "stargazers_count": 4821,
+        "open_issues_count": 37,
+        "owner": {"login": "some-org", "type": "Organization"},
+        "description": f"Agent runtime. Deployed at {addr_hex(direct_bob)}",
+        "pushed_at": "2026-09-01T00:00:00Z",
+    })
+    with pytest.raises(Exception) as exc:
+        contract.report_pathogen("rep-gh", direct_bob, "EVM_TX", tx_hash("gh"))
+    assert UNBOUND in str(exc.value)
+    assert "not the cited transaction" in str(exc.value)
+
+    # Fail closed: no report, no digest, no bond taken.
+    _assert_nothing_filed(contract)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["target_not_a_party", "hash_mismatch", "nonexistent_tx", "not_json"],
+)
+def test_unbound_evidence_reverts_at_filing(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie, case
+):
+    """Every way evidence can fail to prove its relationship to the target reverts the
+    filing with ERR_UNBOUND_EVIDENCE before a bond is taken."""
+    contract = direct_deploy(CONTRACT_PATH)
+    cited = tx_hash(f"unbound-{case}")
+
+    if case == "target_not_a_party":
+        # A real-shaped transaction entirely between Alice and Charlie.
+        mock_tx_telemetry(direct_vm, tx_body(cited, from_addr=direct_alice, to_addr=direct_charlie))
+    elif case == "hash_mismatch":
+        # Bob *is* a party -- but to a different transaction than the one cited.
+        mock_tx_telemetry(direct_vm, tx_body(tx_hash("some-other-tx"), from_addr=direct_bob))
+    elif case == "nonexistent_tx":
+        mock_telemetry_status(direct_vm, 404, '{"message":"Not found"}')
+    else:
+        mock_telemetry_status(direct_vm, 200, "<html>explorer page</html>")
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = MIN_REPORTER_BOND
+    with pytest.raises(Exception) as exc:
+        contract.report_pathogen("rep-unbound", direct_bob, "EVM_TX", cited)
+    assert UNBOUND in str(exc.value)
+    _assert_nothing_filed(contract)
+
+    # The digest was never registered, so the same incident can be refiled once the
+    # evidence is actually bound.
+    serve_incident(direct_vm, direct_bob)
+    contract.report_pathogen("rep-unbound", direct_bob, "EVM_TX", cited)
+    assert contract.get_report("rep-unbound")["status"] == "PENDING"
+
+
+def test_transient_provider_fault_at_filing_is_retryable(
+    direct_vm, direct_deploy, direct_alice, direct_bob
+):
+    """An explorer outage is not evidence of anything: it reverts [TRANSIENT], not
+    ERR_UNBOUND_EVIDENCE, and takes no bond."""
+    contract = direct_deploy(CONTRACT_PATH)
+    mock_telemetry_status(direct_vm, 503, "Service Unavailable")
+    direct_vm.sender = direct_alice
+    direct_vm.value = MIN_REPORTER_BOND
+    with pytest.raises(Exception) as exc:
+        contract.report_pathogen("rep-503", direct_bob, "EVM_TX", tx_hash("503"))
+    assert "[TRANSIENT]" in str(exc.value)
+    assert "ERR_UNBOUND_EVIDENCE" not in str(exc.value)
+    _assert_nothing_filed(contract)
+
+
+@pytest.mark.parametrize("role", ["from", "to", "created_contract"])
+def test_accept_bound_incident_telemetry(
+    direct_vm, direct_deploy, direct_alice, direct_bob, role
+):
+    """A transaction that echoes the cited hash and names the target as a party is
+    accepted, and the proven role is committed to the report."""
+    contract = direct_deploy(CONTRACT_PATH)
+    cited = tx_hash(f"bound-{role}")
+
+    serve_incident(direct_vm, direct_bob, role=role, status="error")
+    _report_pathogen(
+        contract, direct_vm, direct_alice, direct_bob, "rep-bound", "EVM_TX_BASE", cited,
+        bind=False,
+    )
+
+    rep = contract.get_report("rep-bound")
+    assert rep["status"] == "PENDING"
+    assert rep["target_agent"].lower() == addr_hex(direct_bob).lower()
+    assert rep["trace_id"] == cited
+    assert rep["evidence_binding"] == role
+
+    mock_pathogen_verdict(direct_vm, tier="TIER_SUSPICIOUS_ANOMALY")
+    contract.evaluate_pathogen("rep-bound")
+    assert contract.get_report("rep-bound")["tier"] == "TIER_SUSPICIOUS_ANOMALY"
+    assert contract.is_quarantined(direct_bob) is True
+
+
+def test_binding_check_validators_agree_only_on_identical_binding(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    """The binding is agreed by consensus: a validator that sees the same transaction
+    accepts the leader's role; one that sees a transaction not involving the target, or
+    a different role, rejects it."""
+    contract = direct_deploy(CONTRACT_PATH)
+    _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-val")
+    assert direct_vm.run_validator() is True
+
+    serve_incident(direct_vm, direct_bob, role="to")
+    assert direct_vm.run_validator() is False
+
+    serve_incident(direct_vm, direct_charlie)
+    assert direct_vm.run_validator() is False
+
+
+def test_triage_prompt_sees_parties_and_explorer_flags_not_volatile_fields(
+    direct_vm, direct_deploy, direct_alice, direct_bob
+):
+    """The model is shown a canonical incident summary: the parties and the explorer's
+    exploit tags (here, in Blockscout's real `metadata.tags` shape), without the fee
+    fields, calldata and per-block `confirmations` that used to fill the 500-byte
+    prefix it was given. A successful exploit is flagged, not called nominal."""
+    import json
+    contract = direct_deploy(CONTRACT_PATH)
+    _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-tags")
+
+    tagged_sender = {
+        "hash": addr_hex(direct_bob),
+        "is_contract": False,
+        "is_scam": False,
+        "metadata": {"tags": [
+            {"name": "Euler Finance Exploiter 3", "slug": "euler-finance-exploiter-3", "tagType": "name"},
+            {"name": "ATTACKER", "slug": "attacker", "tagType": "generic"},
+        ]},
+    }
+    serve_incident(direct_vm, direct_bob, extra={
+        "from": tagged_sender,
+        "raw_input": "0x" + "ab" * 600,
+        "confirmations": 9216600,
+    })
+    direct_vm.mock_llm(
+        r"(?s)^(?!.*confirmations)(?!.*abababab)"
+        r".*Computed Threat Indicator: CRITICAL_PATHOGEN_INDICATED"
+        r".*euler finance exploiter 3.*",
+        json.dumps(json.dumps({
+            "tier": "TIER_PATHOGEN_CRITICAL",
+            "pathogen_type": "FLASH_LOAN_EXPLOIT",
+            "rationale": "Sender is a tagged exploiter.",
+        })),
+    )
+    contract.evaluate_pathogen("rep-tags")
+    assert contract.get_report("rep-tags")["tier"] == "TIER_PATHOGEN_CRITICAL"
+
+
 def test_unbound_transaction_evidence_resolves_fabricated(
     direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
 ):
-    """A transaction that the reported target is not party to is not evidence about it.
-
-    This is the failure the platform set was rebuilt to eliminate: previously a reporter
-    could attach generic metadata naming no address to any target. Now the contract checks
-    the on-chain participant set itself, before the model is consulted, and slashes the
-    bond of a report whose evidence does not implicate the accused.
-    """
+    """Defence in depth: evaluation re-checks the binding on the exact bytes it
+    classifies. If the served evidence no longer involves the target, the report is
+    fabricated and the bond slashed -- the model is never consulted."""
     contract = direct_deploy(CONTRACT_PATH)
 
     _report_pathogen(
         contract, direct_vm, direct_alice, direct_bob, "rep-unbound", "EVM_TX", tx_hash("unbound")
     )
 
-    # The cited transaction is entirely between Alice and Charlie. Bob appears nowhere.
+    # At evaluation the cited transaction is entirely between Alice and Charlie.
     mock_tx_telemetry(
         direct_vm,
         tx_body(tx_hash("unbound"), from_addr=direct_alice, to_addr=direct_charlie,
                 status="error"),
     )
-    # An LLM verdict is stubbed, but it must never be reached: binding fails first.
     mock_pathogen_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL")
 
     contract.evaluate_pathogen("rep-unbound")
@@ -1459,56 +1647,16 @@ def test_unbound_transaction_evidence_resolves_fabricated(
     assert rep["tier"] == "TIER_FABRICATED_ATTACK"
     assert rep["quarantine_duration_sec"] == 0
     assert rep["payout_atto"] == "0"
-
-    # No quarantine, no antibody, no escrow -- and the bond is forfeit.
     assert contract.is_quarantined(direct_bob) is False
     assert contract.get_escrow("rep-unbound")["exists"] is False
     assert contract.get_claimable_balance(direct_alice) == "0"
     assert int(contract.get_registry_overview()["protocol_reserves_atto"]) == MIN_REPORTER_BOND
 
 
-def test_bound_transaction_evidence_is_accepted(
-    direct_vm, direct_deploy, direct_alice, direct_bob
-):
-    """The same payload with the target as a participant passes the binding gate."""
-    contract = direct_deploy(CONTRACT_PATH)
-
-    _report_pathogen(
-        contract, direct_vm, direct_alice, direct_bob, "rep-bound", "EVM_TX", tx_hash("bound")
-    )
-    _tx_telemetry(direct_vm, "bound", direct_bob, to_addr=direct_alice, status="error")
-    mock_pathogen_verdict(direct_vm, tier="TIER_SUSPICIOUS_ANOMALY")
-
-    contract.evaluate_pathogen("rep-bound")
-
-    rep = contract.get_report("rep-bound")
-    assert rep["tier"] == "TIER_SUSPICIOUS_ANOMALY"
-    assert contract.is_quarantined(direct_bob) is True
-
-
-def test_address_record_for_another_address_is_rejected(
-    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
-):
-    """EVM_ADDRESS evidence must echo the accused. A record naming a different address is
-    rejected even though the platform and identifier are otherwise well-formed."""
-    contract = direct_deploy(CONTRACT_PATH)
-
-    _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-echo")
-    # Serve a record for Charlie while Bob is the accused.
-    mock_telemetry_success(direct_vm, {"is_contract": False}, target_hex=direct_charlie)
-    mock_pathogen_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL")
-
-    contract.evaluate_pathogen("rep-echo")
-
-    rep = contract.get_report("rep-echo")
-    assert rep["tier"] == "TIER_FABRICATED_ATTACK"
-    assert contract.is_quarantined(direct_bob) is False
-
-
 def test_unbound_appeal_evidence_is_rejected_and_slashes_bond(
     direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
 ):
-    """An appeal cannot be won with records about some unrelated agent."""
+    """An appeal cannot be won with a transaction about some unrelated agent."""
     contract = direct_deploy(CONTRACT_PATH)
 
     _report_pathogen(
@@ -1527,14 +1675,58 @@ def test_unbound_appeal_evidence_is_rejected_and_slashes_bond(
         tx_body(tx_hash("ab-appeal"), from_addr=direct_alice, to_addr=direct_charlie),
     )
     mock_appeal_verdict(direct_vm, tier="TIER_BENIGN_NOISE")
-    contract.appeal_quarantine(direct_bob, tx_hash("ab-appeal"), "EVM_TX")
+    appeal_id = _appeal_quarantine(contract, direct_vm, direct_bob, proof=tx_hash("ab-appeal"))
 
     # The proof is unbound, so the appeal is rejected and the appellant's bond is slashed.
     assert contract.is_quarantined(direct_bob) is True
     assert contract.get_claimable_balance(direct_charlie) == "0"
     assert int(contract.get_registry_overview()["protocol_reserves_atto"]) == APPEAL_BOND
-    appeal = contract.get_appeal("appeal_" + addr_hex(direct_bob)[:10] + "_1")
+    appeal = contract.get_appeal(appeal_id)
     assert appeal["status"] == "REJECTED"
+    assert appeal["report_id"] == "rep-appeal-unbound"
+
+
+# ---------------------------------------------------------------------------
+# 17. Appeal Escrow Preservation (steward remediation)
+# ---------------------------------------------------------------------------
+def _critical_verdict(contract, direct_vm, reporter, target, report_id, pool=10 * ATTO):
+    """Fund the pool and drive a report to a critical (7-day quarantine) verdict."""
+    if pool:
+        direct_vm.sender = reporter
+        direct_vm.value = pool
+        contract.fund_bounty_pool()
+    _report_pathogen(contract, direct_vm, reporter, target, report_id)
+    mock_telemetry_success(direct_vm, {"exploit_detected": True, "anomaly_score": 97}, target_hex=target)
+    mock_pathogen_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL")
+    contract.evaluate_pathogen(report_id)
+
+
+def _file(contract, direct_vm, appellant, report_id, bond=APPEAL_BOND, seed="proof"):
+    direct_vm.sender = appellant
+    direct_vm.value = bond
+    contract.file_appeal(report_id, tx_hash(f"{seed}|{report_id}"), "EVM_TX")
+    direct_vm.value = 0
+    return contract.get_escrow(report_id)["active_appeal_id"]
+
+
+def _resolve(contract, direct_vm, target, appeal_id, tier):
+    serve_incident(direct_vm, target)
+    mock_appeal_verdict(direct_vm, tier=tier)
+    direct_vm.value = 0
+    contract.resolve_appeal(appeal_id)
+
+
+def _assert_solvent(contract, *accounts):
+    ov = contract.get_registry_overview()
+    held = sum(int(contract.get_claimable_balance(a)) for a in accounts)
+    assert int(ov["total_deposited_atto"]) == (
+        int(ov["bounty_pool_atto"])
+        + int(ov["protocol_reserves_atto"])
+        + int(ov["total_claimed_atto"])
+        + int(ov["locked_escrow_atto"])
+        + int(ov["pending_appeal_bonds_atto"])
+        + held
+    )
 
 
 def test_quarantine_verdict_escrows_rather_than_pays(
@@ -1543,54 +1735,279 @@ def test_quarantine_verdict_escrows_rather_than_pays(
     """Payout preservation: value owed to a reporter on a quarantine verdict is escrowed,
     so it is never simultaneously withdrawable and appealable."""
     contract = direct_deploy(CONTRACT_PATH)
-
-    direct_vm.sender = direct_alice
-    direct_vm.value = 10 * ATTO
-    contract.fund_bounty_pool()
-
-    _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-esc-a")
-    mock_telemetry_success(direct_vm, {"exploit_detected": True, "anomaly_score": 97}, target_hex=direct_bob)
-    mock_pathogen_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL")
-    contract.evaluate_pathogen("rep-esc-a")
+    _critical_verdict(contract, direct_vm, direct_alice, direct_bob, "rep-esc-a")
 
     esc = contract.get_escrow("rep-esc-a")
     assert esc["status"] == "LOCKED"
     assert esc["is_releasable"] is False
+    assert esc["is_appealable"] is True
+    assert esc["required_appeal_bond_atto"] == str(APPEAL_BOND)
     assert contract.get_claimable_balance(direct_alice) == "0"
-    # Locked until the 7-day quarantine window closes
     assert esc["locked_until_utc"] > 0
 
 
-def test_rejected_appeal_releases_escrow_to_reporter(
-    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+def test_payout_preserved_during_appeal(
+    direct_vm, direct_deploy, direct_alice, direct_bob
 ):
-    """Appeal rejected -> appellant bond slashed, disputed payout released to the reporter
-    immediately rather than making them wait out the remaining quarantine."""
+    """While an appeal is pending nothing can be paid out -- not even after the original
+    appeal window has elapsed -- so the appeal's penalty is always still enforceable."""
     contract = direct_deploy(CONTRACT_PATH)
+    _critical_verdict(contract, direct_vm, direct_alice, direct_bob, "rep-hold")
+
+    appeal_id = _file(contract, direct_vm, direct_bob, "rep-hold")
+    assert contract.get_escrow("rep-hold")["status"] == "UNDER_APPEAL"
+    assert contract.get_report("rep-hold")["status"] == "UNDER_APPEAL"
+    assert contract.get_appeal(appeal_id)["status"] == "PENDING"
 
     direct_vm.sender = direct_alice
-    direct_vm.value = 10 * ATTO
-    contract.fund_bounty_pool()
+    with pytest.raises(Exception) as exc:
+        contract.claim_payout("rep-hold")
+    assert PAYOUT_LOCKED in str(exc.value)
 
-    _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-esc-b")
-    mock_telemetry_success(direct_vm, {"exploit_detected": True, "anomaly_score": 97}, target_hex=direct_bob)
-    mock_pathogen_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL")
-    contract.evaluate_pathogen("rep-esc-b")
+    # The window closes while the appeal is still pending (e.g. an explorer outage kept
+    # resolve_appeal failing). The payout stays locked; a single-transaction appeal would
+    # have let the reporter collect here.
+    _warp_hours(direct_vm, 24 * 8)
+    with pytest.raises(Exception) as exc2:
+        contract.claim_payout("rep-hold")
+    assert PAYOUT_LOCKED in str(exc2.value)
+    with pytest.raises(Exception) as exc3:
+        contract.release_escrow("rep-hold")
+    assert PAYOUT_LOCKED in str(exc3.value)
 
+    # Nor can a second appeal be stacked on the pending one.
+    direct_vm.sender = direct_bob
+    direct_vm.value = APPEAL_BOND
+    with pytest.raises(Exception) as exc4:
+        contract.file_appeal("rep-hold", tx_hash("second"), "EVM_TX")
+    assert "already under appeal" in str(exc4.value)
+
+    assert contract.get_claimable_balance(direct_alice) == "0"
+    _assert_solvent(contract, direct_alice, direct_bob)
+
+    # The penalty still lands in full once the appeal is judged.
+    _resolve(contract, direct_vm, direct_bob, appeal_id, "TIER_BENIGN_NOISE")
+    assert contract.get_escrow("rep-hold")["status"] == "SLASHED"
+
+
+def test_appeal_slashes_false_reporter_and_refunds_escrow(
+    direct_vm, direct_deploy, direct_alice, direct_bob
+):
+    """Appeal upheld (the verdict was false): the reporter's bond is slashed to protocol
+    reserves, the escrowed bounty returns to the pool it was drawn from, the appellant's
+    bond is refunded, the quarantine and antibody are lifted, and the reporter is paid
+    nothing -- permanently."""
+    contract = direct_deploy(CONTRACT_PATH)
+    _critical_verdict(contract, direct_vm, direct_alice, direct_bob, "rep-false")
+    assert int(contract.get_registry_overview()["bounty_pool_atto"]) == 9 * ATTO
+    antibody = contract.get_report("rep-false")["antibody_hash"]
+    assert contract.get_antibody(antibody)["is_active"] is True
+
+    appeal_id = _file(contract, direct_vm, direct_bob, "rep-false")
+    _resolve(contract, direct_vm, direct_bob, appeal_id, "TIER_BENIGN_NOISE")
+
+    ov = contract.get_registry_overview()
+    assert int(ov["bounty_pool_atto"]) == 10 * ATTO           # bounty restored
+    assert int(ov["protocol_reserves_atto"]) == MIN_REPORTER_BOND  # bond slashed
+    assert int(ov["locked_escrow_atto"]) == 0
+    assert int(ov["pending_appeal_bonds_atto"]) == 0
+    assert contract.get_claimable_balance(direct_bob) == str(APPEAL_BOND)  # appellant refunded
+    assert contract.get_claimable_balance(direct_alice) == "0"
+
+    assert contract.get_escrow("rep-false")["status"] == "SLASHED"
+    assert contract.get_report("rep-false")["status"] == "OVERTURNED"
+    appeal = contract.get_appeal(appeal_id)
+    assert appeal["status"] == "UPHELD" and appeal["resolved_tier"] == "TIER_BENIGN_NOISE"
+    assert contract.is_quarantined(direct_bob) is False
+    assert contract.get_antibody(antibody)["is_active"] is False
+    assert contract.get_defended_appeals_count(direct_bob) == 1
+
+    # Final: the reporter can never collect, and the verdict cannot be re-appealed.
+    _warp_hours(direct_vm, 24 * 30)
+    direct_vm.sender = direct_alice
+    with pytest.raises(Exception) as exc:
+        contract.claim_payout("rep-false")
+    assert "already settled" in str(exc.value)
+    direct_vm.value = APPEAL_BOND
+    with pytest.raises(Exception):
+        contract.file_appeal("rep-false", tx_hash("again"), "EVM_TX")
+    direct_vm.value = 0
+    _assert_solvent(contract, direct_alice, direct_bob)
+
+
+def test_appeal_upholds_valid_incident_and_releases_escrow(
+    direct_vm, direct_deploy, direct_alice, direct_bob
+):
+    """Appeal rejected (the incident stands): the appellant's contestation bond is
+    slashed, the report returns to RESOLVED, and the preserved payout is released to the
+    reporter in full when the appeal window closes."""
+    contract = direct_deploy(CONTRACT_PATH)
+    _critical_verdict(contract, direct_vm, direct_alice, direct_bob, "rep-true")
     owed = MIN_REPORTER_BOND + BASE_BOUNTY_REWARD
 
-    direct_vm.sender = direct_charlie
-    direct_vm.value = APPEAL_BOND
-    mock_telemetry_success(direct_vm, {"anomaly_score": 88}, target_hex=direct_bob)
-    mock_appeal_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL", rationale="Exploit still active.")
-    contract.appeal_quarantine(direct_bob, addr_hex(direct_bob))
+    appeal_id = _file(contract, direct_vm, direct_bob, "rep-true")
+    _resolve(contract, direct_vm, direct_bob, appeal_id, "TIER_PATHOGEN_CRITICAL")
 
-    # Threat upheld: quarantine stays, appellant bond forfeit, reporter paid in full.
+    assert contract.get_appeal(appeal_id)["status"] == "REJECTED"
+    assert contract.get_report("rep-true")["status"] == "RESOLVED"
     assert contract.is_quarantined(direct_bob) is True
-    assert contract.get_claimable_balance(direct_charlie) == "0"
-    assert contract.get_escrow("rep-esc-b")["status"] == "RELEASED"
+    assert contract.get_claimable_balance(direct_bob) == "0"
+    ov = contract.get_registry_overview()
+    assert int(ov["protocol_reserves_atto"]) == APPEAL_BOND   # contestation bond slashed
+    assert int(ov["pending_appeal_bonds_atto"]) == 0
+    esc = contract.get_escrow("rep-true")
+    assert esc["status"] == "LOCKED"
+    assert esc["failed_appeals"] == 1
+    assert esc["required_appeal_bond_atto"] == str(2 * APPEAL_BOND)
+
+    _warp_hours(direct_vm, 24 * 7 + 1)
+    direct_vm.sender = direct_alice
+    contract.claim_payout("rep-true")
+
+    assert contract.get_escrow("rep-true")["status"] == "RELEASED"
     assert int(contract.get_claimable_balance(direct_alice)) == owed
     assert int(contract.get_registry_overview()["locked_escrow_atto"]) == 0
+    _assert_solvent(contract, direct_alice, direct_bob)
+
+    contract.withdraw()
+    assert contract.get_claimable_balance(direct_alice) == "0"
+    _assert_solvent(contract, direct_alice, direct_bob)
+
+
+def test_junk_appeal_cannot_foreclose_the_targets_appeal(
+    direct_vm, direct_deploy, direct_alice, direct_bob
+):
+    """A reporter who files a deliberately losing appeal against their own false report,
+    just before the window closes, does not get paid and does not lock the target out:
+    a rejection keeps the window open for APPEAL_GRACE_SEC and the next appeal costs
+    more, so the real target can still appeal and win."""
+    contract = direct_deploy(CONTRACT_PATH)
+    _critical_verdict(contract, direct_vm, direct_alice, direct_bob, "rep-junk")
+
+    _warp_hours(direct_vm, 24 * 7 - 1)                 # one hour of window left
+    junk = _file(contract, direct_vm, direct_alice, "rep-junk", seed="junk")
+    _warp_hours(direct_vm, 24 * 7 + 2)                 # original window is now closed
+    _resolve(contract, direct_vm, direct_bob, junk, "TIER_PATHOGEN_CRITICAL")
+
+    esc = contract.get_escrow("rep-junk")
+    assert esc["status"] == "LOCKED"
+    assert esc["is_appealable"] is True                 # grace period, not paid out
+    direct_vm.sender = direct_alice
+    with pytest.raises(Exception) as exc:
+        contract.claim_payout("rep-junk")
+    assert "ERR_PAYOUT_LOCKED" in str(exc.value)
+
+    # The escalated bond is enforced ...
+    direct_vm.sender = direct_bob
+    direct_vm.value = APPEAL_BOND
+    with pytest.raises(Exception) as low:
+        contract.file_appeal("rep-junk", tx_hash("bob-proof"), "EVM_TX")
+    assert str(2 * APPEAL_BOND) in str(low.value)
+
+    # ... and the target's real appeal wins, slashing the reporter.
+    real = _file(contract, direct_vm, direct_bob, "rep-junk", bond=2 * APPEAL_BOND, seed="bob")
+    _resolve(contract, direct_vm, direct_bob, real, "TIER_BENIGN_NOISE")
+    assert contract.get_escrow("rep-junk")["status"] == "SLASHED"
+    assert contract.get_claimable_balance(direct_alice) == "0"
+    assert int(contract.get_claimable_balance(direct_bob)) == 2 * APPEAL_BOND
+    _assert_solvent(contract, direct_alice, direct_bob)
+
+
+def test_expired_appeal_refunds_appellant_and_restores_claim(
+    direct_vm, direct_deploy, direct_alice, direct_bob
+):
+    """Bounded liveness: an appeal consensus cannot resolve does not freeze the payout
+    forever. After the timeout it closes without a verdict, the appellant is refunded,
+    and the verdict stands."""
+    contract = direct_deploy(CONTRACT_PATH)
+    _critical_verdict(contract, direct_vm, direct_alice, direct_bob, "rep-stuck")
+    appeal_id = _file(contract, direct_vm, direct_bob, "rep-stuck")
+
+    with pytest.raises(Exception) as early:
+        contract.expire_appeal(appeal_id)
+    assert "timeout has not expired" in str(early.value)
+
+    _warp_hours(direct_vm, 24 * 7 + 1)
+    direct_vm.sender = direct_alice                      # permissionless
+    contract.expire_appeal(appeal_id)
+
+    assert contract.get_appeal(appeal_id)["status"] == "EXPIRED"
+    assert contract.get_claimable_balance(direct_bob) == str(APPEAL_BOND)
+    with pytest.raises(Exception):
+        contract.resolve_appeal(appeal_id)
+
+    contract.claim_payout("rep-stuck")
+    assert int(contract.get_claimable_balance(direct_alice)) == MIN_REPORTER_BOND + BASE_BOUNTY_REWARD
+    _assert_solvent(contract, direct_alice, direct_bob)
+
+
+def test_superseded_report_keeps_its_own_appealable_escrow(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    """Appeals are per report. A later report taking over the quarantine record does not
+    strand the earlier report's escrow outside any appeal, and a shorter later verdict
+    does not cut the longer quarantine short."""
+    contract = direct_deploy(CONTRACT_PATH)
+    _critical_verdict(contract, direct_vm, direct_alice, direct_bob, "rep-first")
+    until_first = contract.get_quarantine_info(direct_bob)["quarantine_until_utc"]
+
+    _report_pathogen(contract, direct_vm, direct_charlie, direct_bob, "rep-second")
+    mock_telemetry_success(direct_vm, {"anomaly_score": 55}, target_hex=direct_bob)
+    mock_pathogen_verdict(direct_vm, tier="TIER_SUSPICIOUS_ANOMALY")
+    contract.evaluate_pathogen("rep-second")
+
+    q = contract.get_quarantine_info(direct_bob)
+    assert q["quarantine_until_utc"] == until_first      # not shortened to 24h
+    assert q["last_report_id"] == "rep-first"
+    assert q["total_quarantines"] == 2
+
+    # The second (shorter) report is overturned: its escrow is slashed, but the first
+    # report still defines the quarantine, so the target stays quarantined.
+    second = _file(contract, direct_vm, direct_bob, "rep-second")
+    _resolve(contract, direct_vm, direct_bob, second, "TIER_BENIGN_NOISE")
+    assert contract.get_escrow("rep-second")["status"] == "SLASHED"
+    assert contract.is_quarantined(direct_bob) is True
+
+    # The first report is independently appealable and, when overturned, lifts it.
+    first = _file(contract, direct_vm, direct_bob, "rep-first")
+    _resolve(contract, direct_vm, direct_bob, first, "TIER_BENIGN_NOISE")
+    assert contract.get_escrow("rep-first")["status"] == "SLASHED"
+    assert contract.is_quarantined(direct_bob) is False
+    _assert_solvent(contract, direct_alice, direct_bob, direct_charlie)
+
+
+def test_file_appeal_guards(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = direct_deploy(CONTRACT_PATH)
+    direct_vm.sender = direct_bob
+    direct_vm.value = APPEAL_BOND
+
+    # Only a quarantine verdict opens a disputable escrow.
+    with pytest.raises(Exception) as none:
+        contract.file_appeal("no-such-report", tx_hash("p"), "EVM_TX")
+    assert "no disputable escrow" in str(none.value)
+
+    _critical_verdict(contract, direct_vm, direct_alice, direct_bob, "rep-guard")
+    direct_vm.sender = direct_bob
+    for platform, proof, msg in (
+        ("EVM_ADDRESS", addr_hex(direct_bob), "invalid platform"),
+        ("EVM_TX", addr_hex(direct_bob), "invalid appeal trace_id"),
+    ):
+        direct_vm.value = APPEAL_BOND
+        with pytest.raises(Exception) as exc:
+            contract.file_appeal("rep-guard", proof, platform)
+        assert msg in str(exc.value)
+
+    direct_vm.value = APPEAL_BOND - 1
+    with pytest.raises(Exception) as low:
+        contract.file_appeal("rep-guard", tx_hash("p"), "EVM_TX")
+    assert "minimum bond" in str(low.value)
+
+    _warp_hours(direct_vm, 24 * 7 + 1)
+    direct_vm.value = APPEAL_BOND
+    with pytest.raises(Exception) as closed:
+        contract.file_appeal("rep-guard", tx_hash("p"), "EVM_TX")
+    assert "appeal window" in str(closed.value)
+    assert contract.get_escrow("rep-guard")["status"] == "LOCKED"
 
 
 def test_escrow_release_is_permissionless_but_not_repeatable(
@@ -1608,31 +2025,33 @@ def test_escrow_release_is_permissionless_but_not_repeatable(
     # Still inside the 24h window
     direct_vm.sender = direct_charlie
     with pytest.raises(Exception) as early:
-        contract.release_escrow("rep-esc-c")
+        contract.claim_payout("rep-esc-c")
     assert "escrow is locked until the appeal window closes" in str(early.value)
 
     _warp_hours(direct_vm, 25)
 
     # Charlie is a stranger to this escrow, but release is permissionless by design.
+    # release_escrow is the pre-existing alias of claim_payout.
     contract.release_escrow("rep-esc-c")
 
     assert int(contract.get_claimable_balance(direct_alice)) == MIN_REPORTER_BOND
     assert contract.get_claimable_balance(direct_charlie) == "0"
 
     with pytest.raises(Exception) as twice:
-        contract.release_escrow("rep-esc-c")
+        contract.claim_payout("rep-esc-c")
     assert "already settled" in str(twice.value)
 
     with pytest.raises(Exception) as unknown:
-        contract.release_escrow("no-such-report")
+        contract.claim_payout("no-such-report")
     assert "no escrow exists" in str(unknown.value)
 
 
 def test_escrow_accounting_keeps_solvency_across_both_outcomes(
     direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
 ):
-    """Deposits equal the sum of every bucket -- pool, reserves, claimable, claimed and
-    locked escrow -- after one escrow is slashed and another is released."""
+    """Deposits equal the sum of every bucket -- pool, reserves, claimable, claimed,
+    locked escrow and pending appeal bonds -- after one escrow is slashed and another
+    released."""
     contract = direct_deploy(CONTRACT_PATH)
 
     direct_vm.sender = direct_alice
@@ -1645,11 +2064,9 @@ def test_escrow_accounting_keeps_solvency_across_both_outcomes(
     mock_pathogen_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL")
     contract.evaluate_pathogen("rep-s1")
 
-    direct_vm.sender = direct_charlie
-    direct_vm.value = APPEAL_BOND
-    mock_telemetry_success(direct_vm, {"anomaly_score": 0}, target_hex=direct_bob)
-    mock_appeal_verdict(direct_vm, tier="TIER_BENIGN_NOISE")
-    contract.appeal_quarantine(direct_bob, addr_hex(direct_bob))
+    appeal_id = _file(contract, direct_vm, direct_charlie, "rep-s1")
+    _assert_solvent(contract, direct_alice, direct_charlie)       # bond in flight
+    _resolve(contract, direct_vm, direct_bob, appeal_id, "TIER_BENIGN_NOISE")
 
     # Escrow 2 -> released after its window closes. A distinct target, because the upheld
     # appeal above escalated Bob's anti-griefing bond requirement.
@@ -1659,26 +2076,11 @@ def test_escrow_accounting_keeps_solvency_across_both_outcomes(
     mock_pathogen_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL")
     contract.evaluate_pathogen("rep-s2")
 
-    ov = contract.get_registry_overview()
-    assert int(ov["locked_escrow_atto"]) > 0
-    assert int(ov["total_deposited_atto"]) == (
-        int(ov["bounty_pool_atto"])
-        + int(ov["protocol_reserves_atto"])
-        + int(contract.get_claimable_balance(direct_alice))
-        + int(contract.get_claimable_balance(direct_charlie))
-        + int(ov["total_claimed_atto"])
-        + int(ov["locked_escrow_atto"])
-    )
+    assert _locked_escrow_total(contract) > 0
+    _assert_solvent(contract, direct_alice, direct_charlie)
 
     _warp_hours(direct_vm, 24 * 8)
-    contract.release_escrow("rep-s2")
+    contract.claim_payout("rep-s2")
 
-    ov2 = contract.get_registry_overview()
-    assert int(ov2["locked_escrow_atto"]) == 0
-    assert int(ov2["total_deposited_atto"]) == (
-        int(ov2["bounty_pool_atto"])
-        + int(ov2["protocol_reserves_atto"])
-        + int(contract.get_claimable_balance(direct_alice))
-        + int(contract.get_claimable_balance(direct_charlie))
-        + int(ov2["total_claimed_atto"])
-    )
+    assert _locked_escrow_total(contract) == 0
+    _assert_solvent(contract, direct_alice, direct_charlie)

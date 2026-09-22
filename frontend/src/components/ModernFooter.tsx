@@ -61,7 +61,7 @@ export function ModernFooter({ onSelectTab, onOpenDevModal }: ModernFooterProps)
               <li><button type="button" className="linkish" onClick={() => go('faq')}>FAQ</button></li>
               <li><button type="button" className="linkish" onClick={onOpenDevModal}>Integration SDK</button></li>
               <li>
-                <a href="https://github.com/SOBEK96/Phage" target="_blank" rel="noopener noreferrer">
+                <a href="https://github.com/moltaphet/phage" target="_blank" rel="noopener noreferrer">
                   GitHub
                 </a>
               </li>

@@ -22,10 +22,12 @@ needs `--experimental-strip-types`, since those modules are TypeScript.
 
 ## The live cycle
 
-The two suites are dry runs: `simulateWriteContract` never reaches `run_nondet`,
-so neither one proves the consensus engine works — only that its guards hold.
-`live-cycle.mjs` is the script that does, by actually escrowing the bond and
-letting the resulting tier decide whether it is refunded, slashed, or paid out.
+The two suites are dry runs. `simulateWriteContract` executes the call on a single
+node — including the leader side of `run_nondet`, so the binding checks in
+`security-suite.mjs` section 5 see a real Blockscout fetch — but it commits nothing
+and involves no validators, so it cannot prove consensus is reached.
+`live-cycle.mjs` is the script that does, by filing a real bonded report and
+letting the resulting tier decide whether it is refunded, slashed, or escrowed.
 
 It needs a signing key, which the suites do not. Pass it through the environment
 so it never lands in shell history or this file:
@@ -36,17 +38,19 @@ GL_PK=$(security find-generic-password -s genlayer-cli -a account:<name> -w) \
   ./scripts/live-cycle.mjs --dry     # drop --dry to spend
 ```
 
-Defaults point at a burn address, so a run quarantines nobody real, and use
-`EVM_ADDRESS` — whose evidence identifier *is* the reported target, so the
-contract's binding check passes by construction. To drive the cycle from a
-transaction instead, pass `--platform EVM_TX --trace 0x<64 hex>`; the target must
-then be a party to that transaction, because the contract verifies the
-participant set before any model reads the payload. Both platforms resolve to
-`eth.blockscout.com` / `base.blockscout.com`, which answer without an API key.
+Defaults cite a real incident: the Euler Finance exploit transaction
+(`0xc310a0af…b111d`, Ethereum, 2023-03-13), reported against its sender
+`0x5F259D0b…8B8c`, which Blockscout tags as *Euler Finance Exploiter 3* /
+`ATTACKER`. `report_pathogen` fetches that transaction from `eth.blockscout.com`
+and takes the bond only if the target is one of its parties (sender, recipient or
+created contract); otherwise the filing reverts with `ERR_UNBOUND_EVIDENCE`. Pass
+`--target`, `--platform EVM_TX|EVM_TX_BASE` and `--trace 0x<64 hex>` to cite a
+different incident. Both platforms resolve to Blockscout's keyless public API.
 
 If the verdict carries a quarantine, the run also prints the escrow it opened:
-the bond and bounty are held for the length of the appeal window rather than
-paid to the reporter, and are released (or slashed) by the appeal outcome.
+the bond and bounty are held until the appeal window closes with no appeal
+pending (`claim_payout`), or are slashed by an upheld appeal
+(`file_appeal` → `resolve_appeal`).
 
 ## Rate limiting
 
