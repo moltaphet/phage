@@ -6,7 +6,7 @@
 Project Name:        Phage (Phage Sentinel)
 Track:               Track 6: Autonomous Protocols & Agentic Infrastructure
 Target Network:      GenLayer (Studio-dev / Mainnet)
-Contract Address:    0x038d5Fd5082Cb05586C4C7CBcdDE827AC7f6BBa1   (v0.4.0)
+Contract Address:    0x831e3b4772c86F05EB780174CbDc30926DF8d2B2   (v0.5.0)
 Deploy Tx:           0x58e04a07337f3fb03076c5b42040bbe1d6a94e0b1c4908e90920c5f4540d632d
 Owner:               0x2E56C8579fA11CB144E6FD778dA772061f4dd930
 Live Demo:           https://phage-sentinel.vercel.app
@@ -205,7 +205,7 @@ Phage is not a theoretical whitepaper; it is a **fully implemented, battle-teste
 
 ### 4.1 Production Deployment
 - **Network**: GenLayer Studio-dev (Chain ID: `61997`)
-- **Contract Address**: [`0x038d5Fd5082Cb05586C4C7CBcdDE827AC7f6BBa1`](https://explorer-studio-dev.genlayer.com/address/0x038d5Fd5082Cb05586C4C7CBcdDE827AC7f6BBa1) (v0.4.0)
+- **Contract Address**: [`0x831e3b4772c86F05EB780174CbDc30926DF8d2B2`](https://explorer-studio-dev.genlayer.com/address/0x831e3b4772c86F05EB780174CbDc30926DF8d2B2) (v0.5.0)
 - **Deploy Transaction**: `0x58e04a07337f3fb03076c5b42040bbe1d6a94e0b1c4908e90920c5f4540d632d` (see [`deployments/studio-dev.json`](deployments/studio-dev.json))
 - **Live Demo**: [phage-sentinel.vercel.app](https://phage-sentinel.vercel.app) — the dApp reads and writes this deployment directly; reads work with no wallet connected.
 - **Compiler / Runner**: Pinned runner `py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng`
@@ -279,5 +279,5 @@ We are requesting a grant of **$45,000 (denominated in USD / equivalent $GEN)** 
 
 - **Smart Contract Code**: [`contracts/phage_sentinel.py`](https://github.com/moltaphet/phage/blob/main/contracts/phage_sentinel.py)
 - **Test Suite (80 tests)**: [`tests/direct/test_phage_sentinel.py`](https://github.com/moltaphet/phage/blob/main/tests/direct/test_phage_sentinel.py)
-- **Studio-dev Explorer**: [0x038d5Fd5082Cb05586C4C7CBcdDE827AC7f6BBa1](https://explorer-studio-dev.genlayer.com/address/0x038d5Fd5082Cb05586C4C7CBcdDE827AC7f6BBa1)
+- **Studio-dev Explorer**: [0x831e3b4772c86F05EB780174CbDc30926DF8d2B2](https://explorer-studio-dev.genlayer.com/address/0x831e3b4772c86F05EB780174CbDc30926DF8d2B2)
 - **Project Documentation**: [README.md](https://github.com/moltaphet/phage/blob/main/README.md)

@@ -9,15 +9,14 @@ Network:         GenLayer Studio-dev
 Chain ID:        61997
 RPC:             https://studio-dev.genlayer.com/api
 Explorer:        https://explorer-studio-dev.genlayer.com
-Contract:        0x038d5Fd5082Cb05586C4C7CBcdDE827AC7f6BBa1   (v0.4.0, deployed 2026-09-22)
+Contract:        0x831e3b4772c86F05EB780174CbDc30926DF8d2B2   (v0.5.0, deployed 2026-09-23)
 Deploy Tx:       0x58e04a07337f3fb03076c5b42040bbe1d6a94e0b1c4908e90920c5f4540d632d
 Owner:           0x2E56C8579fA11CB144E6FD778dA772061f4dd930
 Live Demo:       https://phage-sentinel.vercel.app
 Pinned Runner:   py-genlayer:5jycge4q8k23462jtb0b9fyey1s9qz928sz2nbrd9mg4sxqg2qng
 Evidence:        Incident-level: a transaction on Ethereum/Base (Blockscout) the target is a party to
-Verification:    108/108 direct tests pass. The Studio-dev address (and its live consensus
-                 cycle, §9.3) is the v0.4.0 contract; v0.5.0 changes the report_pathogen /
-                 file_appeal ABI and must be redeployed before the dApp and scripts can use it
+Verification:    108/108 direct tests pass; v0.5.0 deployed on Studio-dev (ACCEPTED). The live
+                 consensus cycle in §9.3 was run against the superseded v0.4.0 deployment
 License:         MIT
 ```
 
@@ -443,7 +442,7 @@ genlayer deploy --contract contracts/phage_sentinel.py \
   --fee-value 500000000000000
 
 # 3. Smoke-test the live contract (same rule: no --rpc).
-genlayer call 0x038d5Fd5082Cb05586C4C7CBcdDE827AC7f6BBa1 get_registry_overview
+genlayer call 0x831e3b4772c86F05EB780174CbDc30926DF8d2B2 get_registry_overview
 ```
 
 Writes need the same treatment, derived per call rather than hardcoded. `genlayer write`
