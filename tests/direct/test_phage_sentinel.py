@@ -6,6 +6,8 @@ from conftest import (
     MIN_REPORTER_BOND,
     APPEAL_BOND,
     BASE_BOUNTY_REWARD,
+    DEFAULT_CATEGORY,
+    JUSTIFICATION,
     addr_hex,
     tx_hash,
     tx_body,
@@ -30,6 +32,7 @@ def _report_pathogen(
     trace_id=None,
     bond=MIN_REPORTER_BOND,
     bind=True,
+    category=DEFAULT_CATEGORY,
 ):
     """Register a report citing a transaction the target is a party to.
 
@@ -43,7 +46,7 @@ def _report_pathogen(
         serve_incident(direct_vm, target_agent)
     direct_vm.sender = reporter
     direct_vm.value = bond
-    contract.report_pathogen(report_id, target_agent, platform, trace_id)
+    contract.report_pathogen(report_id, target_agent, platform, trace_id, category)
 
 
 def _warp_hours(direct_vm, hours: float) -> None:
@@ -56,17 +59,16 @@ def _warp_hours(direct_vm, hours: float) -> None:
     direct_vm.warp(future)
 
 
-def _appeal_quarantine(contract, direct_vm, target, proof=None, platform="EVM_TX"):
-    """File an appeal against the report behind `target`'s quarantine, then resolve it.
+def _appeal_quarantine(contract, direct_vm, target, kind="AUTHORIZED_ADMIN_ACTION"):
+    """File a rebuttal of the report behind `target`'s quarantine, then resolve it.
 
     Uses the sender, value and mocks the caller has already set: the value is the appeal
-    bond, and the current web mock is what the arbiter fetches as the appeal proof.
-    Returns the appeal id.
+    bond, and the current web mock is what the arbiter re-fetches as the report's own
+    flagged transaction. Returns the appeal id.
     """
     report_id = contract.get_quarantine_info(target)["last_report_id"]
-    if proof is None:
-        proof = tx_hash(f"appeal-proof|{report_id}")
-    contract.file_appeal(report_id, proof, platform)
+    trace = contract.get_report(report_id)["trace_id"]
+    contract.file_appeal(report_id, trace, kind, JUSTIFICATION)
     appeal_id = contract.get_escrow(report_id)["active_appeal_id"]
     direct_vm.value = 0
     contract.resolve_appeal(appeal_id)
@@ -151,7 +153,7 @@ def test_report_pathogen_bond_below_minimum_rejected(
     direct_vm.value = MIN_REPORTER_BOND - 1
 
     with pytest.raises(Exception) as exc:
-        contract.report_pathogen("rep-low-bond", direct_bob, "EVM_TX", tx_hash("low-bond"))
+        contract.report_pathogen("rep-low-bond", direct_bob, "EVM_TX", tx_hash("low-bond"), DEFAULT_CATEGORY)
     assert "minimum reporter bond is 0.1 GEN" in str(exc.value)
 
 
@@ -163,7 +165,7 @@ def test_report_pathogen_empty_report_id_rejected(
     direct_vm.value = MIN_REPORTER_BOND
 
     with pytest.raises(Exception) as exc:
-        contract.report_pathogen("", direct_bob, "EVM_TX", tx_hash("empty-id"))
+        contract.report_pathogen("", direct_bob, "EVM_TX", tx_hash("empty-id"), DEFAULT_CATEGORY)
     assert "report_id cannot be empty" in str(exc.value)
 
 
@@ -186,7 +188,7 @@ def test_report_pathogen_invalid_platform_rejected(
     direct_vm.value = MIN_REPORTER_BOND
 
     with pytest.raises(Exception) as exc:
-        contract.report_pathogen("rep-bad-plat", direct_bob, "UNSUPPORTED_PLATFORM", "trace-001")
+        contract.report_pathogen("rep-bad-plat", direct_bob, "UNSUPPORTED_PLATFORM", "trace-001", DEFAULT_CATEGORY)
     assert "invalid platform" in str(exc.value)
 
 
@@ -259,6 +261,7 @@ def test_url_validation_rejects_full_http_url(
             direct_bob,
             "EVM_TX",
             "https://attacker.com/fake-trace",
+            DEFAULT_CATEGORY,
         )
     assert "invalid trace_id format" in str(exc.value)
 
@@ -273,7 +276,7 @@ def test_url_validation_rejects_non_hex_trace_id(
 
     for bad in ("just-a-label", "0x1234", "0x" + "z" * 64, "a" * 64):
         with pytest.raises(Exception) as exc:
-            contract.report_pathogen("rep-bad-trace", direct_bob, "EVM_TX", bad)
+            contract.report_pathogen("rep-bad-trace", direct_bob, "EVM_TX", bad, DEFAULT_CATEGORY)
         assert "invalid trace_id format" in str(exc.value)
 
 
@@ -319,7 +322,6 @@ def test_consensus_binding_tier_critical_allocates_100pct(
     mock_pathogen_verdict(
         direct_vm,
         tier="TIER_PATHOGEN_CRITICAL",
-        pathogen_type="INDIRECT_PROMPT_INJECTION",
     )
 
     contract.evaluate_pathogen("rep-crit-1")
@@ -358,7 +360,7 @@ def test_consensus_binding_tier_critical_allocates_100pct(
     # Antibody recorded
     antibodies = contract.list_antibodies_paginated(0, 10)
     assert len(antibodies) == 1
-    assert antibodies[0]["pathogen_type"] == "INDIRECT_PROMPT_INJECTION"
+    assert antibodies[0]["pathogen_type"] == DEFAULT_CATEGORY
 
 
 def test_consensus_binding_tier_suspicious_24h_zero_payout(
@@ -375,7 +377,6 @@ def test_consensus_binding_tier_suspicious_24h_zero_payout(
     mock_pathogen_verdict(
         direct_vm,
         tier="TIER_SUSPICIOUS_ANOMALY",
-        pathogen_type="ANOMALOUS_OUTLIER",
     )
 
     contract.evaluate_pathogen("rep-susp-1")
@@ -404,7 +405,6 @@ def test_consensus_binding_tier_benign_zero_quarantine_zero_payout(
     mock_pathogen_verdict(
         direct_vm,
         tier="TIER_BENIGN_NOISE",
-        pathogen_type="NOMINAL_TRAFFIC",
     )
 
     contract.evaluate_pathogen("rep-benign-1")
@@ -433,7 +433,6 @@ def test_adversarial_slashing_fabricated_attack_slashes_bond(
     mock_pathogen_verdict(
         direct_vm,
         tier="TIER_FABRICATED_ATTACK",
-        pathogen_type="FABRICATED_SUBMISSION",
     )
 
     contract.evaluate_pathogen("rep-fab-1")
@@ -506,7 +505,7 @@ def test_solvency_invariant_multi_cycle(
 
     with pytest.raises(Exception) as esc_locked:
         contract.claim_payout("rep-solv-1")
-    assert "escrow is locked until the appeal window closes" in str(esc_locked.value)
+    assert "ERR_CHALLENGE_WINDOW_ACTIVE" in str(esc_locked.value)
 
     # Past the 7-day quarantine the window has closed with no appeal, so the escrow
     # matures into a claimable balance.
@@ -697,14 +696,14 @@ def test_escalated_reporter_bond_after_defended_appeal(
     direct_vm.value = MIN_REPORTER_BOND
     with pytest.raises(Exception) as exc:
         contract.report_pathogen(
-            "rep-grief-attempt", direct_bob, "EVM_TX", tx_hash("grief-attempt")
+            "rep-grief-attempt", direct_bob, "EVM_TX", tx_hash("grief-attempt"), DEFAULT_CATEGORY
         )
     assert "required reporter bond is 200000000000000000 atto" in str(exc.value)
 
     # Reporting with 0.2 GEN succeeds
     direct_vm.value = 2 * MIN_REPORTER_BOND
     contract.report_pathogen(
-        "rep-grief-attempt", direct_bob, "EVM_TX", tx_hash("grief-attempt")
+        "rep-grief-attempt", direct_bob, "EVM_TX", tx_hash("grief-attempt"), DEFAULT_CATEGORY
     )
     assert contract.get_report("rep-grief-attempt")["status"] == "PENDING"
 
@@ -1073,7 +1072,6 @@ def test_antibody_lifecycle_revocation_on_upheld_appeal(
     mock_pathogen_verdict(
         direct_vm,
         tier="TIER_PATHOGEN_CRITICAL",
-        pathogen_type="INDIRECT_PROMPT_INJECTION",
         rationale="Severe memory injection detected.",
     )
     contract.evaluate_pathogen("rep-ab-1")
@@ -1087,7 +1085,7 @@ def test_antibody_lifecycle_revocation_on_upheld_appeal(
 
     ab = contract.get_antibody(ab_hash)
     assert ab["is_active"] is True
-    assert ab["pathogen_type"] == "INDIRECT_PROMPT_INJECTION"
+    assert ab["pathogen_type"] == DEFAULT_CATEGORY
 
     # Also check list_antibodies_paginated
     paginated_abs = contract.list_antibodies_paginated(0, 10)
@@ -1138,7 +1136,7 @@ def test_pre_quantize_telemetry_falsy_string_evaluates_nominal(
         r".*Computed Threat Indicator: BENIGN_NOMINAL_INDICATED.*",
         json.dumps(json.dumps({
             "tier": "TIER_BENIGN_NOISE",
-            "pathogen_type": "NOMINAL",
+            "category_supported": True,
             "rationale": "String false was correctly identified as falsy.",
         })),
     )
@@ -1170,7 +1168,7 @@ def test_pre_quantize_telemetry_truthy_string_evaluates_critical(
         r".*Computed Threat Indicator: CRITICAL_PATHOGEN_INDICATED.*",
         json.dumps(json.dumps({
             "tier": "TIER_PATHOGEN_CRITICAL",
-            "pathogen_type": "PROMPT_INJECTION",
+            "category_supported": True,
             "rationale": "String true correctly classified as critical exploit.",
         })),
     )
@@ -1303,7 +1301,7 @@ def test_reporter_cannot_escape_appeal_penalty_by_withdrawing_first(
     # Nor can Alice release her own escrow early.
     with pytest.raises(Exception) as still_locked:
         contract.claim_payout("rep-leak-1")
-    assert "escrow is locked until the appeal window closes" in str(still_locked.value)
+    assert "ERR_CHALLENGE_WINDOW_ACTIVE" in str(still_locked.value)
 
     # Charlie appeals successfully, and the penalty lands in full.
     direct_vm.sender = direct_charlie
@@ -1345,7 +1343,7 @@ def test_critical_with_empty_bounty_pool_pays_zero_but_refunds_and_quarantines(
 
     _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-nopool-1")
     mock_telemetry_success(direct_vm, {"exploit_detected": True, "anomaly_score": 99}, target_hex=direct_bob)
-    mock_pathogen_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL", pathogen_type="ZERO_POOL_EXPLOIT")
+    mock_pathogen_verdict(direct_vm, tier="TIER_PATHOGEN_CRITICAL")
     contract.evaluate_pathogen("rep-nopool-1")
 
     rep = contract.get_report("rep-nopool-1")
@@ -1402,7 +1400,7 @@ def test_report_pathogen_malformed_address_rejected(
     with pytest.raises(Exception) as exc:
         # A well-formed trace, so the malformed *address* is what the contract rejects
         # rather than tripping the trace-format guard first.
-        contract.report_pathogen("rep-bad-addr", bad, "EVM_TX", tx_hash("malformed-addr"))
+        contract.report_pathogen("rep-bad-addr", bad, "EVM_TX", tx_hash("malformed-addr"), DEFAULT_CATEGORY)
 
     assert "invalid target_agent" in str(exc.value)
     # Rejected before any mutation: no report recorded, bond not retained.
@@ -1463,7 +1461,7 @@ def test_reject_generic_unbound_github_metadata(
     # The retired platforms no longer exist.
     for retired in ("GITHUB_AUDIT", "EVM_ADDRESS", "SECURITY_FEED", "AGENT_RPC"):
         with pytest.raises(Exception) as exc:
-            contract.report_pathogen("rep-gh", direct_bob, retired, tx_hash("gh"))
+            contract.report_pathogen("rep-gh", direct_bob, retired, tx_hash("gh"), DEFAULT_CATEGORY)
         assert "invalid platform" in str(exc.value)
 
     # A GitHub repository document served where a transaction was cited.
@@ -1477,7 +1475,7 @@ def test_reject_generic_unbound_github_metadata(
         "pushed_at": "2026-09-01T00:00:00Z",
     })
     with pytest.raises(Exception) as exc:
-        contract.report_pathogen("rep-gh", direct_bob, "EVM_TX", tx_hash("gh"))
+        contract.report_pathogen("rep-gh", direct_bob, "EVM_TX", tx_hash("gh"), DEFAULT_CATEGORY)
     assert UNBOUND in str(exc.value)
     assert "not the cited transaction" in str(exc.value)
 
@@ -1511,14 +1509,14 @@ def test_unbound_evidence_reverts_at_filing(
     direct_vm.sender = direct_alice
     direct_vm.value = MIN_REPORTER_BOND
     with pytest.raises(Exception) as exc:
-        contract.report_pathogen("rep-unbound", direct_bob, "EVM_TX", cited)
+        contract.report_pathogen("rep-unbound", direct_bob, "EVM_TX", cited, DEFAULT_CATEGORY)
     assert UNBOUND in str(exc.value)
     _assert_nothing_filed(contract)
 
     # The digest was never registered, so the same incident can be refiled once the
     # evidence is actually bound.
     serve_incident(direct_vm, direct_bob)
-    contract.report_pathogen("rep-unbound", direct_bob, "EVM_TX", cited)
+    contract.report_pathogen("rep-unbound", direct_bob, "EVM_TX", cited, DEFAULT_CATEGORY)
     assert contract.get_report("rep-unbound")["status"] == "PENDING"
 
 
@@ -1532,7 +1530,7 @@ def test_transient_provider_fault_at_filing_is_retryable(
     direct_vm.sender = direct_alice
     direct_vm.value = MIN_REPORTER_BOND
     with pytest.raises(Exception) as exc:
-        contract.report_pathogen("rep-503", direct_bob, "EVM_TX", tx_hash("503"))
+        contract.report_pathogen("rep-503", direct_bob, "EVM_TX", tx_hash("503"), DEFAULT_CATEGORY)
     assert "[TRANSIENT]" in str(exc.value)
     assert "ERR_UNBOUND_EVIDENCE" not in str(exc.value)
     _assert_nothing_filed(contract)
@@ -1591,7 +1589,6 @@ def test_triage_prompt_sees_parties_and_explorer_flags_not_volatile_fields(
     prefix it was given. A successful exploit is flagged, not called nominal."""
     import json
     contract = direct_deploy(CONTRACT_PATH)
-    _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-tags")
 
     tagged_sender = {
         "hash": addr_hex(direct_bob),
@@ -1607,13 +1604,15 @@ def test_triage_prompt_sees_parties_and_explorer_flags_not_volatile_fields(
         "raw_input": "0x" + "ab" * 600,
         "confirmations": 9216600,
     })
+    # Filed against the same transaction, so the label agreed at filing matches.
+    _report_pathogen(contract, direct_vm, direct_alice, direct_bob, "rep-tags", bind=False)
     direct_vm.mock_llm(
-        r"(?s)^(?!.*confirmations)(?!.*abababab)"
+        r"(?s)^(?!.*confirmations)(?!.*ababababababababab)"
         r".*Computed Threat Indicator: CRITICAL_PATHOGEN_INDICATED"
         r".*euler finance exploiter 3.*",
         json.dumps(json.dumps({
             "tier": "TIER_PATHOGEN_CRITICAL",
-            "pathogen_type": "FLASH_LOAN_EXPLOIT",
+            "category_supported": True,
             "rationale": "Sender is a tagged exploiter.",
         })),
     )
@@ -1653,10 +1652,12 @@ def test_unbound_transaction_evidence_resolves_fabricated(
     assert int(contract.get_registry_overview()["protocol_reserves_atto"]) == MIN_REPORTER_BOND
 
 
-def test_unbound_appeal_evidence_is_rejected_and_slashes_bond(
+def test_appeal_reverts_when_original_evidence_no_longer_binds(
     direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
 ):
-    """An appeal cannot be won with a transaction about some unrelated agent."""
+    """Resolution re-judges the report's own transaction. If that evidence no longer
+    involves the target, the appeal cannot be judged either way: it reverts, stays
+    pending, and the appellant is not slashed for the explorer's inconsistency."""
     contract = direct_deploy(CONTRACT_PATH)
 
     _report_pathogen(
@@ -1667,23 +1668,19 @@ def test_unbound_appeal_evidence_is_rejected_and_slashes_bond(
     contract.evaluate_pathogen("rep-appeal-unbound")
     assert contract.is_quarantined(direct_bob) is True
 
-    direct_vm.sender = direct_charlie
-    direct_vm.value = APPEAL_BOND
-    # A transaction between two other parties, offered as Bob's proof of innocence.
+    appeal_id = _file(contract, direct_vm, direct_charlie, "rep-appeal-unbound")
     mock_tx_telemetry(
         direct_vm,
-        tx_body(tx_hash("ab-appeal"), from_addr=direct_alice, to_addr=direct_charlie),
+        tx_body(tx_hash("ab"), from_addr=direct_alice, to_addr=direct_charlie),
     )
     mock_appeal_verdict(direct_vm, tier="TIER_BENIGN_NOISE")
-    appeal_id = _appeal_quarantine(contract, direct_vm, direct_bob, proof=tx_hash("ab-appeal"))
+    with pytest.raises(Exception) as exc:
+        contract.resolve_appeal(appeal_id)
+    assert UNBOUND in str(exc.value)
 
-    # The proof is unbound, so the appeal is rejected and the appellant's bond is slashed.
-    assert contract.is_quarantined(direct_bob) is True
+    assert contract.get_appeal(appeal_id)["status"] == "PENDING"
     assert contract.get_claimable_balance(direct_charlie) == "0"
-    assert int(contract.get_registry_overview()["protocol_reserves_atto"]) == APPEAL_BOND
-    appeal = contract.get_appeal(appeal_id)
-    assert appeal["status"] == "REJECTED"
-    assert appeal["report_id"] == "rep-appeal-unbound"
+    assert int(contract.get_registry_overview()["pending_appeal_bonds_atto"]) == APPEAL_BOND
 
 
 # ---------------------------------------------------------------------------
@@ -1701,10 +1698,12 @@ def _critical_verdict(contract, direct_vm, reporter, target, report_id, pool=10 
     contract.evaluate_pathogen(report_id)
 
 
-def _file(contract, direct_vm, appellant, report_id, bond=APPEAL_BOND, seed="proof"):
+def _file(contract, direct_vm, appellant, report_id, bond=APPEAL_BOND, kind="AUTHORIZED_ADMIN_ACTION"):
+    """File a rebuttal of `report_id`'s own flagged transaction."""
     direct_vm.sender = appellant
     direct_vm.value = bond
-    contract.file_appeal(report_id, tx_hash(f"{seed}|{report_id}"), "EVM_TX")
+    trace = contract.get_report(report_id)["trace_id"]
+    contract.file_appeal(report_id, trace, kind, JUSTIFICATION)
     direct_vm.value = 0
     return contract.get_escrow(report_id)["active_appeal_id"]
 
@@ -1779,7 +1778,10 @@ def test_payout_preserved_during_appeal(
     direct_vm.sender = direct_bob
     direct_vm.value = APPEAL_BOND
     with pytest.raises(Exception) as exc4:
-        contract.file_appeal("rep-hold", tx_hash("second"), "EVM_TX")
+        contract.file_appeal(
+            "rep-hold", contract.get_report("rep-hold")["trace_id"],
+            "AUTHORIZED_ADMIN_ACTION", JUSTIFICATION,
+        )
     assert "already under appeal" in str(exc4.value)
 
     assert contract.get_claimable_balance(direct_alice) == "0"
@@ -1830,7 +1832,10 @@ def test_appeal_slashes_false_reporter_and_refunds_escrow(
     assert "already settled" in str(exc.value)
     direct_vm.value = APPEAL_BOND
     with pytest.raises(Exception):
-        contract.file_appeal("rep-false", tx_hash("again"), "EVM_TX")
+        contract.file_appeal(
+            "rep-false", contract.get_report("rep-false")["trace_id"],
+            "AUTHORIZED_ADMIN_ACTION", JUSTIFICATION,
+        )
     direct_vm.value = 0
     _assert_solvent(contract, direct_alice, direct_bob)
 
@@ -1885,7 +1890,7 @@ def test_junk_appeal_cannot_foreclose_the_targets_appeal(
     _critical_verdict(contract, direct_vm, direct_alice, direct_bob, "rep-junk")
 
     _warp_hours(direct_vm, 24 * 7 - 1)                 # one hour of window left
-    junk = _file(contract, direct_vm, direct_alice, "rep-junk", seed="junk")
+    junk = _file(contract, direct_vm, direct_alice, "rep-junk", kind="INTENDED_ARBITRAGE")
     _warp_hours(direct_vm, 24 * 7 + 2)                 # original window is now closed
     _resolve(contract, direct_vm, direct_bob, junk, "TIER_PATHOGEN_CRITICAL")
 
@@ -1895,17 +1900,20 @@ def test_junk_appeal_cannot_foreclose_the_targets_appeal(
     direct_vm.sender = direct_alice
     with pytest.raises(Exception) as exc:
         contract.claim_payout("rep-junk")
-    assert "ERR_PAYOUT_LOCKED" in str(exc.value)
+    assert "ERR_CHALLENGE_WINDOW_ACTIVE" in str(exc.value)
 
     # The escalated bond is enforced ...
     direct_vm.sender = direct_bob
     direct_vm.value = APPEAL_BOND
     with pytest.raises(Exception) as low:
-        contract.file_appeal("rep-junk", tx_hash("bob-proof"), "EVM_TX")
+        contract.file_appeal(
+            "rep-junk", contract.get_report("rep-junk")["trace_id"],
+            "AUTHORIZED_ADMIN_ACTION", JUSTIFICATION,
+        )
     assert str(2 * APPEAL_BOND) in str(low.value)
 
     # ... and the target's real appeal wins, slashing the reporter.
-    real = _file(contract, direct_vm, direct_bob, "rep-junk", bond=2 * APPEAL_BOND, seed="bob")
+    real = _file(contract, direct_vm, direct_bob, "rep-junk", bond=2 * APPEAL_BOND)
     _resolve(contract, direct_vm, direct_bob, real, "TIER_BENIGN_NOISE")
     assert contract.get_escrow("rep-junk")["status"] == "SLASHED"
     assert contract.get_claimable_balance(direct_alice) == "0"
@@ -1980,32 +1988,37 @@ def test_file_appeal_guards(direct_vm, direct_deploy, direct_alice, direct_bob):
     contract = direct_deploy(CONTRACT_PATH)
     direct_vm.sender = direct_bob
     direct_vm.value = APPEAL_BOND
+    kind = "AUTHORIZED_ADMIN_ACTION"
 
     # Only a quarantine verdict opens a disputable escrow.
     with pytest.raises(Exception) as none:
-        contract.file_appeal("no-such-report", tx_hash("p"), "EVM_TX")
+        contract.file_appeal("no-such-report", tx_hash("p"), kind, JUSTIFICATION)
     assert "no disputable escrow" in str(none.value)
 
     _critical_verdict(contract, direct_vm, direct_alice, direct_bob, "rep-guard")
+    trace = contract.get_report("rep-guard")["trace_id"]
     direct_vm.sender = direct_bob
-    for platform, proof, msg in (
-        ("EVM_ADDRESS", addr_hex(direct_bob), "invalid platform"),
-        ("EVM_TX", addr_hex(direct_bob), "invalid appeal trace_id"),
+    for args, msg in (
+        ((addr_hex(direct_bob), kind, JUSTIFICATION), "ERR_APPEAL_NOT_BOUND_TO_REPORT"),
+        ((trace, "I_AM_INNOCENT", JUSTIFICATION), "ERR_INVALID_REBUTTAL"),
+        ((trace, kind, "trust me"), "ERR_INVALID_REBUTTAL"),
+        ((trace, kind, "x" * 1001), "ERR_INVALID_REBUTTAL"),
     ):
         direct_vm.value = APPEAL_BOND
         with pytest.raises(Exception) as exc:
-            contract.file_appeal("rep-guard", proof, platform)
+            contract.file_appeal("rep-guard", *args)
         assert msg in str(exc.value)
 
     direct_vm.value = APPEAL_BOND - 1
     with pytest.raises(Exception) as low:
-        contract.file_appeal("rep-guard", tx_hash("p"), "EVM_TX")
+        contract.file_appeal("rep-guard", trace, kind, JUSTIFICATION)
     assert "minimum bond" in str(low.value)
 
+    # The flagged hash is matched case-insensitively.
     _warp_hours(direct_vm, 24 * 7 + 1)
     direct_vm.value = APPEAL_BOND
     with pytest.raises(Exception) as closed:
-        contract.file_appeal("rep-guard", tx_hash("p"), "EVM_TX")
+        contract.file_appeal("rep-guard", trace.upper().replace("0X", "0x"), kind, JUSTIFICATION)
     assert "appeal window" in str(closed.value)
     assert contract.get_escrow("rep-guard")["status"] == "LOCKED"
 
@@ -2026,7 +2039,7 @@ def test_escrow_release_is_permissionless_but_not_repeatable(
     direct_vm.sender = direct_charlie
     with pytest.raises(Exception) as early:
         contract.claim_payout("rep-esc-c")
-    assert "escrow is locked until the appeal window closes" in str(early.value)
+    assert "ERR_CHALLENGE_WINDOW_ACTIVE" in str(early.value)
 
     _warp_hours(direct_vm, 25)
 

@@ -65,6 +65,54 @@ export const PLATFORM_IDENTIFIER_HINT: Record<Platform, string> = {
   EVM_TX_BASE: '0x-prefixed 32-byte transaction hash the target is a party to',
 };
 
+/**
+ * Exploit categories a report may claim, mirrored from the contract's
+ * VALID_EXPLOIT_CATEGORIES. Filing fetches the transaction and requires it to exhibit
+ * the category's mechanics, or reverts with ERR_UNSUPPORTED_EXPLOIT_CATEGORY (no bond
+ * taken). REENTRANCY additionally fetches the transaction's internal call trace.
+ */
+export const EXPLOIT_CATEGORIES = [
+  'REENTRANCY',
+  'FLASH_LOAN_DRAIN',
+  'ORACLE_MANIPULATION',
+  'ACCESS_CONTROL',
+  'ARBITRARY_EXTERNAL_CALL',
+] as const;
+export type ExploitCategory = (typeof EXPLOIT_CATEGORIES)[number];
+
+export const EXPLOIT_CATEGORY_LABELS: Record<ExploitCategory, string> = {
+  REENTRANCY: 'Re-entrancy — a callee calls back into the victim mid-call',
+  FLASH_LOAN_DRAIN: 'Flash-loan drain — borrowed and repaid in one transaction',
+  ORACLE_MANIPULATION: 'Oracle manipulation — a pool pushed and unwound in one transaction',
+  ACCESS_CONTROL: 'Access control — a privileged entrypoint invoked successfully',
+  ARBITRARY_EXTERNAL_CALL: 'Arbitrary external call — a token call forwarded inside calldata',
+};
+
+/**
+ * Grounds on which an appeal argues the flagged transaction itself was legitimate,
+ * mirrored from the contract's VALID_REBUTTAL_KINDS. An appeal always rebuts the
+ * report's own transaction; citing a different one reverts with
+ * ERR_APPEAL_NOT_BOUND_TO_REPORT.
+ */
+export const REBUTTAL_KINDS = [
+  'AUTHORIZED_ADMIN_ACTION',
+  'INTENDED_ARBITRAGE',
+  'DOCUMENTED_MULTISIG_ROUTINE',
+  'MISCLASSIFIED_MECHANICS',
+] as const;
+export type RebuttalKind = (typeof REBUTTAL_KINDS)[number];
+
+export const REBUTTAL_KIND_LABELS: Record<RebuttalKind, string> = {
+  AUTHORIZED_ADMIN_ACTION: 'Authorised admin action — the key was entitled to make this call',
+  INTENDED_ARBITRAGE: 'Intended arbitrage — value flows leave no victim short',
+  DOCUMENTED_MULTISIG_ROUTINE: 'Documented multi-sig routine',
+  MISCLASSIFIED_MECHANICS: 'Misclassified — the mechanics found are incidental',
+};
+
+/** Contract bounds on an appeal's written justification. */
+export const MIN_JUSTIFICATION_CHARS = 20;
+export const MAX_JUSTIFICATION_CHARS = 1000;
+
 /** Hosts the platforms resolve to — the only telemetry sources the contract reads. */
 export const PLATFORM_SOURCE: Record<Platform, string> = {
   EVM_TX: 'eth.blockscout.com',
@@ -116,6 +164,9 @@ export interface Antibody {
   mint_timestamp_iso: string;
   is_active: boolean;
   reporter: string;
+  /** Consensus-agreed defence label: "<CATEGORY>|sel=<selector>|<invariant>". */
+  label: string;
+  report_id: string;
 }
 
 export interface PathogenReport {
@@ -127,13 +178,16 @@ export interface PathogenReport {
   /** The target's proven role in the cited transaction: from / to / created_contract. */
   evidence_binding: string;
   bond_amount_gen: string;
-  state: 'PENDING' | 'RESOLVED' | 'UNDER_APPEAL' | 'OVERTURNED' | 'EXPIRED';
+  state: 'PENDING' | 'RESOLVED' | 'UNDER_APPEAL' | 'OVERTURNED' | 'EXPIRED' | 'CLOSED';
   evaluated_tier: string;
   quarantine_seconds: number;
   bounty_payout_gen: string;
   timestamp_utc: number;
   timestamp_iso: string;
   seq: number;
+  exploit_category: string;
+  /** The antibody label validators derived from the evidence when the report was filed. */
+  antibody_label: string;
 }
 
 export interface AppealRecord {
@@ -142,8 +196,11 @@ export interface AppealRecord {
   target_agent: string;
   appellant: string;
   appeal_bond_gen: string;
-  proof_trace_id: string;
+  /** Always the report's own flagged transaction. */
+  rebutted_trace_id: string;
   platform: string;
+  rebuttal_kind: string;
+  justification: string;
   resolved_tier: string;
   state: 'PENDING' | 'UPHELD' | 'REJECTED' | 'EXPIRED';
   timestamp_iso: string;
@@ -164,7 +221,9 @@ export interface ProtocolState {
  * to UNDER_APPEAL, where nothing can be paid out (claim_payout reverts with
  * ERR_PAYOUT_LOCKED) until resolve_appeal lands. Upheld → SLASHED; rejected →
  * back to LOCKED with the window kept open a further 24h; window closed with no
- * appeal pending → claim_payout releases it to the reporter.
+ * appeal pending → claim_payout releases it to the reporter (before that it reverts
+ * with ERR_CHALLENGE_WINDOW_ACTIVE). expire_incident closes an incident whose clock
+ * has run out, settling any bond it still holds.
  */
 export type EscrowStatus = 'NONE' | 'LOCKED' | 'UNDER_APPEAL' | 'RELEASED' | 'SLASHED';
 

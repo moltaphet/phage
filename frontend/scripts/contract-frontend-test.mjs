@@ -58,13 +58,14 @@ console.log('\n=== PHASE B: write methods, dry-run (all 13) ===');
 const TX = '0x' + 'a'.repeat(64);
 const WRITES = [
   ['fund_bounty_pool', [], 10_000_000_000_000_000n],
-  ['report_pathogen', ['fe-test-tx', probe, 'EVM_TX', TX], 10_000_000_000_000_000n],
+  ['report_pathogen', ['fe-test-tx', probe, 'EVM_TX', TX, 'FLASH_LOAN_DRAIN'], 10_000_000_000_000_000n],
   ['evaluate_pathogen', ['fe-test-1'], 0n],
-  ['file_appeal', ['fe-test-1', TX, 'EVM_TX'], 200_000_000_000_000_000n],
+  ['file_appeal', ['fe-test-1', TX, 'AUTHORIZED_ADMIN_ACTION', 'Authorised treasury rebalance by the admin key.'], 200_000_000_000_000_000n],
   ['resolve_appeal', ['appeal-fe-test-1-1'], 0n],
   ['expire_appeal', ['appeal-fe-test-1-1'], 0n],
   ['claim_payout', ['fe-test-1'], 0n],
   ['release_escrow', ['fe-test-1'], 0n],
+  ['expire_incident', ['fe-test-1'], 0n],
   ['recover_agent', [probe], 0n],
   ['reclaim_expired_report_bond', ['fe-test-1'], 0n],
   ['withdraw', [], 0n],

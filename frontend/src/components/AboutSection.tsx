@@ -55,12 +55,12 @@ export function AboutSection() {
               <tr>
                 <td>Pathogen</td>
                 <td className="mono">Rogue agent / exploit payload</td>
-                <td>Prompt injection, drain, oracle poison</td>
+                <td>Re-entrancy, flash-loan drain, oracle manipulation, access control, arbitrary call</td>
               </tr>
               <tr>
                 <td>T-cell recognition</td>
                 <td className="mono">Multi-LLM consensus</td>
-                <td>Independent nodes classify the trace</td>
+                <td>Independent nodes verify the claimed category's mechanics, then classify</td>
               </tr>
               <tr>
                 <td>Cellular quarantine</td>
@@ -70,12 +70,17 @@ export function AboutSection() {
               <tr>
                 <td>Antibody memory</td>
                 <td className="mono">evaluate_pathogen (critical)</td>
-                <td>Network-wide payload rejection</td>
+                <td>Label agreed by validators at filing and again at evaluation</td>
               </tr>
               <tr>
                 <td>Autoimmune check</td>
                 <td className="mono">file_appeal / resolve_appeal</td>
-                <td>Bound counter-proof lifts a false positive and slashes the reporter</td>
+                <td>Rebuttal of the flagged transaction lifts a false positive and slashes the reporter</td>
+              </tr>
+              <tr>
+                <td>Resolution</td>
+                <td className="mono">claim_payout / expire_incident</td>
+                <td>Pay a matured escrow, or close an incident whose clock has run out</td>
               </tr>
             </tbody>
           </table>

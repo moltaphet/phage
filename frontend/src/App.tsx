@@ -6,10 +6,13 @@ import { attoToGen, genToAtto, shortHex } from './lib/format';
 import { describeError } from './lib/errors';
 import { useWallet } from './lib/useWallet';
 import {
+  claimPayout,
+  expireIncident,
   fileAppeal,
   fundBountyPool,
   getAppeal,
   getEscrow,
+  getReport,
   getRequiredReporterBondAtto,
   getWriteClient,
   loadProtocolState,
@@ -207,9 +210,8 @@ export function App() {
 
   const handleSubmitAppeal = async (data: {
     targetAgent: string;
-    proofTraceId: string;
-    platform: string;
-    reason: string;
+    rebuttalKind: string;
+    justification: string;
   }) => {
     const client = getSigner();
     if (!client) throw new Error('Wallet not connected.');
@@ -232,10 +234,13 @@ export function App() {
 
     // Step 1: file. Deterministic — posts the bond and freezes the disputed payout.
     showToast('Confirm the appeal bond in your wallet…', 'info');
+    // The appeal rebuts that report's own flagged transaction — never another one.
+    const report = await getReport(reportId);
     const fileHash = await fileAppeal(client, {
       reportId,
-      proofTraceId: data.proofTraceId,
-      platform: data.platform,
+      rebuttedTraceId: report.trace_id,
+      rebuttalKind: data.rebuttalKind,
+      justification: data.justification,
       bondAtto: BigInt(escrow.required_appeal_bond_atto),
     });
     showToast('Appeal filed — the reporter\'s payout is now frozen.', 'info', fileHash);
@@ -264,6 +269,27 @@ export function App() {
     wallet.refreshBalance();
     await refreshAll();
   };
+
+  // Workflow completion: pay a matured escrow to its reporter, or close an incident
+  // whose clock has run out. Both are permissionless; the contract decides who is paid.
+  const handleSettleIncident = useCallback(
+    async (reportId: string, action: 'claim' | 'expire') => {
+      const client = getSigner();
+      if (!client) throw new Error('Wallet not connected.');
+      showToast('Confirm the settlement in your wallet…', 'info');
+      const hash = action === 'claim' ? await claimPayout(client, reportId) : await expireIncident(client, reportId);
+      showToast(action === 'claim' ? 'Claiming payout…' : 'Expiring incident…', 'info', hash);
+      await waitForReceipt(client, hash);
+      showToast(
+        action === 'claim' ? `Payout for ${reportId} released to its reporter.` : `Incident ${reportId} settled.`,
+        'success',
+        hash,
+      );
+      setVaultRefreshKey((k) => k + 1);
+      await refreshAll();
+    },
+    [getSigner, refreshAll, showToast],
+  );
 
   const handleWithdraw = useCallback(async () => {
     const client = getSigner();
@@ -444,6 +470,7 @@ export function App() {
                   walletConnected={wallet.isConnected}
                   refreshKey={vaultRefreshKey}
                   onWithdraw={handleWithdraw}
+                  onSettleIncident={handleSettleIncident}
                 />
                 <AgentHealthInspector
                   quarantinedAgents={quarantinedAgents}
@@ -463,6 +490,7 @@ export function App() {
                   walletConnected={wallet.isConnected}
                   refreshKey={vaultRefreshKey}
                   onWithdraw={handleWithdraw}
+                  onSettleIncident={handleSettleIncident}
                 />
                 <AgentHealthInspector
                   quarantinedAgents={quarantinedAgents}

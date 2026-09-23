@@ -1,8 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Info, Loader2, Lock, Send } from 'lucide-react';
 import { getRequiredReporterBondGen } from '../lib/genlayer';
-import { PLATFORM_IDENTIFIER_HINT, PLATFORM_LABELS, PLATFORM_SOURCE, VALID_PLATFORMS } from '../lib/contract';
-import type { Platform } from '../lib/contract';
+import {
+  EXPLOIT_CATEGORIES,
+  EXPLOIT_CATEGORY_LABELS,
+  PLATFORM_IDENTIFIER_HINT,
+  PLATFORM_LABELS,
+  PLATFORM_SOURCE,
+  VALID_PLATFORMS,
+} from '../lib/contract';
+import type { ExploitCategory, Platform } from '../lib/contract';
 
 interface PathogenReportingPortalProps {
   initialTarget: string;
@@ -32,7 +39,7 @@ export function PathogenReportingPortal({
   const [targetAgent, setTargetAgent] = useState(initialTarget);
   const [platform, setPlatform] = useState<Platform>('EVM_TX');
   const [traceId, setTraceId] = useState('');
-  const [category, setCategory] = useState('PROMPT_INJECTION');
+  const [category, setCategory] = useState<ExploitCategory>('FLASH_LOAN_DRAIN');
   const [description, setDescription] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [requiredBond, setRequiredBond] = useState('0.10');
@@ -102,7 +109,7 @@ export function PathogenReportingPortal({
     // A real mainnet transaction hash, so the sample is one the contract can fetch
     // and check for the target's participation rather than an illustrative string.
     setTraceId('0x8c1e0f3d9a5b7c4e2f6a8d0b1c3e5f7092a4b6d8e0f2a4c6b8d0e2f4a6c8b0d2');
-    setCategory('REENTRANCY_DRAIN');
+    setCategory('REENTRANCY');
     setDescription('Autonomous agent attempted recursive re-entrancy siphon on liquidity pool router during flash-loan settlement window.');
   };
 
@@ -184,16 +191,24 @@ export function PathogenReportingPortal({
           </div>
           <div className="field">
             <label className="label" htmlFor="category">
-              Observed indicator <span className="req">*</span>
+              Exploit category <span className="req">*</span>
             </label>
-            <select id="category" className="select" value={category} onChange={(e) => setCategory(e.target.value)}>
-              <option value="PROMPT_INJECTION">Prompt injection / system hijack</option>
-              <option value="REENTRANCY_DRAIN">Re-entrancy / recursive drain</option>
-              <option value="UNAUTHORIZED_CALL">Unauthorized contract call</option>
-              <option value="SYBIL_ORACLE_POISON">Oracle manipulation</option>
-              <option value="AGENT_MALICIOUS_FORK">Hostile agent fork</option>
+            <select
+              id="category"
+              className="select"
+              value={category}
+              onChange={(e) => setCategory(e.target.value as ExploitCategory)}
+            >
+              {EXPLOIT_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {EXPLOIT_CATEGORY_LABELS[c]}
+                </option>
+              ))}
             </select>
-            <p className="help">Primary exploit vector, recorded with your report.</p>
+            <p className="help">
+              Validators check the transaction shows this category's mechanics. If it does not,
+              filing reverts (ERR_UNSUPPORTED_EXPLOIT_CATEGORY) and no bond is taken.
+            </p>
           </div>
         </div>
 

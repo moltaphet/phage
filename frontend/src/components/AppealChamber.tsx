@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, Loader2, Lock, Send } from 'lucide-react';
-import type { AppealRecord, Platform, QuarantineInfo } from '../lib/contract';
-import { PLATFORM_IDENTIFIER_HINT, PLATFORM_LABELS, VALID_PLATFORMS } from '../lib/contract';
+import type { AppealRecord, QuarantineInfo, RebuttalKind } from '../lib/contract';
+import {
+  MAX_JUSTIFICATION_CHARS,
+  MIN_JUSTIFICATION_CHARS,
+  REBUTTAL_KIND_LABELS,
+  REBUTTAL_KINDS,
+} from '../lib/contract';
 import { formatIso, shortHex, tierLabel } from '../lib/format';
 
 interface AppealChamberProps {
@@ -10,19 +15,14 @@ interface AppealChamberProps {
   initialTarget: string;
   onSubmitAppeal: (data: {
     targetAgent: string;
-    proofTraceId: string;
-    platform: string;
-    reason: string;
+    rebuttalKind: RebuttalKind;
+    justification: string;
   }) => Promise<void>;
   walletConnected: boolean;
   onConnectWallet: () => void;
 }
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
-// Mirrors the contract's `_validate_trace_id`: every platform takes a transaction
-// hash. The transaction must also involve the quarantined agent — proof about
-// someone else rejects the appeal and forfeits the bond.
-const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/;
 
 export function AppealChamber({
   quarantinedAgents,
@@ -33,9 +33,8 @@ export function AppealChamber({
   onConnectWallet,
 }: AppealChamberProps) {
   const [selectedAgent, setSelectedAgent] = useState(initialTarget);
-  const [proofTraceId, setProofTraceId] = useState('');
-  const [platform, setPlatform] = useState<Platform>('EVM_TX');
-  const [reason, setReason] = useState('');
+  const [rebuttalKind, setRebuttalKind] = useState<RebuttalKind>('AUTHORIZED_ADMIN_ACTION');
+  const [justification, setJustification] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -53,24 +52,17 @@ export function AppealChamber({
       setErrorMsg('Select or enter a valid 40-character target agent address.');
       return;
     }
-    if (!TX_HASH_RE.test(proofTraceId.trim())) {
-      setErrorMsg('Enter the 0x-prefixed 32-byte transaction hash the agent is a party to.');
-      return;
-    }
-    if (!reason.trim() || reason.trim().length < 15) {
-      setErrorMsg('State grounds for appeal with at least 15 characters.');
+    const text = justification.trim();
+    if (text.length < MIN_JUSTIFICATION_CHARS || text.length > MAX_JUSTIFICATION_CHARS) {
+      setErrorMsg(
+        `Justify the rebuttal in ${MIN_JUSTIFICATION_CHARS}–${MAX_JUSTIFICATION_CHARS} characters.`,
+      );
       return;
     }
     setSubmitting(true);
     try {
-      await onSubmitAppeal({
-        targetAgent: cleanAddress,
-        proofTraceId: proofTraceId.trim(),
-        platform,
-        reason: reason.trim(),
-      });
-      setProofTraceId('');
-      setReason('');
+      await onSubmitAppeal({ targetAgent: cleanAddress, rebuttalKind, justification: text });
+      setJustification('');
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message.split('\n')[0] : 'Appeal transaction failed.');
     } finally {
@@ -85,7 +77,7 @@ export function AppealChamber({
           <div>
             <h2 className="section-title">Appeal chamber</h2>
             <p className="section-copy">
-              Contest a false-positive quarantine with a transaction the agent is a party to. Filing freezes the reporter's payout until validators rule; if upheld, the reporter is slashed, isolation lifts and the antibody is revoked.
+              Rebut the report behind a quarantine. An appeal cannot cite some other transaction: it argues that the report's own flagged transaction was legitimate, and validators re-judge that transaction with your rebuttal in view. Filing freezes the reporter's payout until they rule; if upheld, the reporter is slashed, isolation lifts and the antibody is revoked.
             </p>
           </div>
           <div style={{ textAlign: 'right' }}>
@@ -127,58 +119,49 @@ export function AppealChamber({
               )}
             </div>
             <div className="field">
-              <label className="label" htmlFor="appeal-platform">
-                Counter-proof platform <span className="req">*</span>
+              <label className="label" htmlFor="rebuttal-kind">
+                Rebuttal <span className="req">*</span>
               </label>
               <select
-                id="appeal-platform"
+                id="rebuttal-kind"
                 className="select"
-                value={platform}
-                onChange={(e) => setPlatform(e.target.value as Platform)}
+                value={rebuttalKind}
+                onChange={(e) => setRebuttalKind(e.target.value as RebuttalKind)}
               >
-                {VALID_PLATFORMS.map((p) => (
-                  <option key={p} value={p}>
-                    {PLATFORM_LABELS[p]}
+                {REBUTTAL_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {REBUTTAL_KIND_LABELS[k]}
                   </option>
                 ))}
               </select>
               <p className="help">
-                The proof is checked against the agent you are appealing for. Records about a
-                different address are rejected and forfeit the bond.
+                The appeal targets the flagged transaction of the report that defines this
+                quarantine — it is filled in for you and cannot be substituted.
               </p>
             </div>
           </div>
 
           <div className="field">
-            <label className="label" htmlFor="proof">
-              Counter-evidence identifier <span className="req">*</span>
-            </label>
-            <input
-              id="proof"
-              className="input mono"
-              value={proofTraceId}
-              onChange={(e) => setProofTraceId(e.target.value)}
-              placeholder="0x8c1e0f3d9a5b7c4e2f6a8d0b1c3e5f7092a4b6d8e0f2a4c6b8d0e2f4a6c8b0d2"
-            />
-            <p className="help">{PLATFORM_IDENTIFIER_HINT[platform]}.</p>
-          </div>
-
-          <div className="field">
             <label className="label" htmlFor="grounds">
-              Grounds for appeal <span className="req">*</span>
+              Justification <span className="req">*</span>
             </label>
             <textarea
               id="grounds"
               className="textarea"
               rows={4}
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="Explain why the quarantine was a false positive, or how the patch neutralizes the flagged vector…"
+              maxLength={MAX_JUSTIFICATION_CHARS}
+              value={justification}
+              onChange={(e) => setJustification(e.target.value)}
+              placeholder="Explain why the flagged transaction was legitimate protocol execution — who was authorised to make the call, where the borrowed value went, which documented routine it belongs to…"
             />
+            <p className="help">
+              {justification.trim().length}/{MAX_JUSTIFICATION_CHARS} · validators accept it only if the
+              flagged transaction itself is consistent with it.
+            </p>
           </div>
 
           <p className="help">
-            Two transactions: filing posts the bond (0.20 GEN, doubling with each rejected appeal on the same report) and freezes the disputed payout; resolving runs consensus. Upheld: your bond is refunded, the reporter's bond is slashed and the bounty returns to the pool. Rejected: your bond is forfeit to reserves, and the window stays open 24h for a further appeal.
+            Two transactions: filing posts the bond (0.20 GEN, rising by 0.20 GEN with each rejected appeal on the same report) and freezes the disputed payout; resolving runs consensus. Upheld: your bond is refunded, the reporter's bond is slashed and the bounty returns to the pool. Rejected: your bond is forfeit to reserves, and the window stays open 24h for a further appeal.
           </p>
 
           {walletConnected ? (
@@ -220,12 +203,12 @@ export function AppealChamber({
                             ? 'Expired'
                             : 'Under appeal'}
                     </span>
-                    <span className="chip">{app.platform}</span>
+                    <span className="chip">{app.rebuttal_kind || app.platform}</span>
                   </div>
                   <p className="hash" style={{ marginTop: 8 }}>
                     Agent {shortHex(app.target_agent, 10, 8)} · report {app.report_id}
                   </p>
-                  <p className="help" style={{ marginTop: 4 }}>Proof: {app.proof_trace_id}</p>
+                  <p className="help" style={{ marginTop: 4 }}>Rebutted: {app.rebutted_trace_id}</p>
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontWeight: 700 }}>

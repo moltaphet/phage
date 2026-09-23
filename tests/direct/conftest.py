@@ -11,6 +11,21 @@ MIN_REPORTER_BOND = ATTO // 10
 APPEAL_BOND = 2 * MIN_REPORTER_BOND
 BASE_BOUNTY_REWARD = 1 * ATTO
 
+# The category the general suite files under. The default transaction body served by
+# these helpers carries a flash-loan borrow-and-repay, so it satisfies this category's
+# mechanics check; tests of the other categories build their own evidence.
+DEFAULT_CATEGORY = "FLASH_LOAN_DRAIN"
+ERR_UNSUPPORTED_CATEGORY = (
+    "ERR_UNSUPPORTED_EXPLOIT_CATEGORY: evidence does not support claimed exploit classification"
+)
+
+# Addresses that are never test accounts: a flash lender and a token contract.
+LENDER = "0x" + "1a" * 20
+TOKEN = "0x" + "70" * 20
+
+# A rebuttal long enough to satisfy the contract's minimum justification length.
+JUSTIFICATION = "Authorised treasury rebalance executed by the protocol's admin key."
+
 
 def addr_hex(addr) -> str:
     """Hex form of a test address.
@@ -36,9 +51,29 @@ def tx_hash(seed: str) -> str:
     return "0x" + hashlib.sha256(seed.encode()).hexdigest()
 
 
+def token_transfer(src, dst, token=TOKEN, value="1000"):
+    """One Blockscout `token_transfers` entry."""
+    return {
+        "token": {"address_hash": token, "symbol": "TKN"},
+        "from": {"hash": addr_hex(src)},
+        "to": {"hash": addr_hex(dst)},
+        "total": {"value": value},
+    }
+
+
+def flash_loan_transfers(borrower):
+    """A borrow from LENDER to `borrower` and its repayment, in one transaction."""
+    return [token_transfer(LENDER, borrower), token_transfer(borrower, LENDER, value="1001")]
+
+
 def tx_body(tx_hash_: str, from_addr=None, to_addr=None, created=None, status: str = "ok"):
-    """A Blockscout-shaped transaction body, matching the real API's field names."""
+    """A Blockscout-shaped transaction body, matching the real API's field names.
+
+    Carries a flash-loan borrow-and-repay through the sender by default, so it meets the
+    DEFAULT_CATEGORY mechanics check.
+    """
     node = lambda a: {"hash": addr_hex(a)} if a is not None else None
+    borrower = from_addr if from_addr is not None else OTHER_PARTY
     return {
         "hash": tx_hash_,
         "status": status,
@@ -48,6 +83,8 @@ def tx_body(tx_hash_: str, from_addr=None, to_addr=None, created=None, status: s
         "created_contract": node(created),
         "value": "0",
         "decoded_input": None,
+        "raw_input": "0x",
+        "token_transfers": flash_loan_transfers(borrower),
     }
 
 
@@ -64,7 +101,10 @@ def _reset_web_mocks(direct_vm) -> None:
     direct_vm._live_web_handler = None
 
 
-def serve_incident(direct_vm, target, role: str = "from", status: str = "ok", extra=None):
+def serve_incident(
+    direct_vm, target, role: str = "from", status: str = "ok", extra=None, internal_calls=None,
+    transfer_page=None,
+):
     """Serve a bound incident for *whatever* transaction hash is requested.
 
     The contract requires the telemetry to echo the cited hash and to name the target as
@@ -72,12 +112,38 @@ def serve_incident(direct_vm, target, role: str = "from", status: str = "ok", ex
     installs the harness's fallback web handler, which reads the hash from the URL and
     answers with a Blockscout-shaped transaction in which `target` plays `role`
     ("from", "to" or "created_contract"). `extra` fields are merged into the body.
+
+    A request for the transaction's `/internal-transactions` page is answered with
+    `internal_calls` -- `(from, to)` pairs in execution order -- and a request for its
+    `/token-transfers` page with `transfer_page` (a list of `token_transfer` entries).
+    Returns the list of URLs requested, so a test can assert exactly which evidence the
+    contract fetched.
     """
     _reset_web_mocks(direct_vm)
     target_hex = addr_hex(target)
+    requested_urls = []
+
+    def respond(body):
+        return {"ok": {"response": {
+            "status": 200,
+            "headers": {},
+            "body": json.dumps(body).encode("utf-8"),
+        }}}
 
     def handler(data):
-        requested = str(data.get("url", "")).rstrip("/").rsplit("/", 1)[-1]
+        url = str(data.get("url", "")).rstrip("/")
+        requested_urls.append(url)
+        if url.endswith("/internal-transactions"):
+            return respond({"items": [
+                {"index": i, "type": "call", "success": True,
+                 "from": {"hash": addr_hex(src)}, "to": {"hash": addr_hex(dst)}}
+                for i, (src, dst) in enumerate(internal_calls or [])
+            ], "next_page_params": None})
+        if url.endswith("/token-transfers"):
+            return respond({"items": [
+                dict(t, log_index=i) for i, t in enumerate(transfer_page or [])
+            ], "next_page_params": None})
+        requested = url.rsplit("/", 1)[-1]
         body = tx_body(
             requested,
             from_addr=target_hex if role == "from" else OTHER_PARTY,
@@ -86,13 +152,10 @@ def serve_incident(direct_vm, target, role: str = "from", status: str = "ok", ex
             status=status,
         )
         body.update(extra or {})
-        return {"ok": {"response": {
-            "status": 200,
-            "headers": {},
-            "body": json.dumps(body).encode("utf-8"),
-        }}}
+        return respond(body)
 
     direct_vm._live_web_handler = handler
+    return requested_urls
 
 
 # An address that is never a test account, used as the non-target party of a transaction.
@@ -155,7 +218,7 @@ def _replace_llm_mock(direct_vm, pattern: str, response: str) -> None:
 def mock_pathogen_verdict(
     direct_vm,
     tier: str = "TIER_PATHOGEN_CRITICAL",
-    pathogen_type: str = "PROMPT_INJECTION",
+    category_supported: bool = True,
     rationale: str = "Active exploit confirmed from forensic logs.",
 ):
     _replace_llm_mock(
@@ -165,7 +228,7 @@ def mock_pathogen_verdict(
         # The direct harness deserializes one layer, so double-dumps yields text.
         json.dumps(json.dumps({
             "tier": tier,
-            "pathogen_type": pathogen_type,
+            "category_supported": category_supported,
             "rationale": rationale,
         })),
     )
@@ -174,7 +237,8 @@ def mock_pathogen_verdict(
 def mock_appeal_verdict(
     direct_vm,
     tier: str = "TIER_BENIGN_NOISE",
-    rationale: str = "Target proof verifies completely benign operation.",
+    rebuts_original: bool = True,
+    rationale: str = "The flagged transaction was authorised protocol execution.",
 ):
     _replace_llm_mock(
         direct_vm,
@@ -183,6 +247,7 @@ def mock_appeal_verdict(
         # The direct harness deserializes one layer, so double-dumps yields text.
         json.dumps(json.dumps({
             "tier": tier,
+            "rebuts_original": rebuts_original,
             "rationale": rationale,
         })),
     )

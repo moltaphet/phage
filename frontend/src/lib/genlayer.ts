@@ -135,6 +135,8 @@ function mapAntibody(raw: unknown): Antibody {
     mint_timestamp_iso: isoFromUtc(ts),
     is_active: asBool(r.is_active),
     reporter: asString(r.reporter),
+    label: asString(r.label),
+    report_id: asString(r.report_id),
   };
 }
 
@@ -156,6 +158,8 @@ function mapReport(raw: unknown): PathogenReport {
     timestamp_utc: ts,
     timestamp_iso: isoFromUtc(ts),
     seq: asNumber(r.seq),
+    exploit_category: asString(r.exploit_category),
+    antibody_label: asString(r.antibody_label),
   };
 }
 
@@ -168,8 +172,10 @@ function mapAppeal(raw: unknown): AppealRecord {
     target_agent: asString(r.target_agent),
     appellant: asString(r.appellant),
     appeal_bond_gen: attoToGen(asString(r.bond_atto)),
-    proof_trace_id: asString(r.appeal_proof_trace_id),
+    rebutted_trace_id: asString(r.rebutted_trace_id),
     platform: asString(r.platform),
+    rebuttal_kind: asString(r.rebuttal_kind),
+    justification: asString(r.justification),
     resolved_tier: asString(r.resolved_tier),
     state: (asString(r.status) || 'PENDING') as AppealRecord['state'],
     timestamp_iso: isoFromUtc(ts),
@@ -347,11 +353,18 @@ export function fundBountyPool(client: GenClient, valueAtto: bigint): Promise<st
 
 export function reportPathogen(
   client: GenClient,
-  params: { reportId: string; targetAgent: string; platform: string; traceId: string; bondAtto: bigint },
+  params: {
+    reportId: string;
+    targetAgent: string;
+    platform: string;
+    traceId: string;
+    exploitCategory: string;
+    bondAtto: bigint;
+  },
 ): Promise<string> {
   return write(client, {
     functionName: 'report_pathogen',
-    args: [params.reportId, params.targetAgent, params.platform, params.traceId],
+    args: [params.reportId, params.targetAgent, params.platform, params.traceId, params.exploitCategory],
     value: params.bondAtto,
   });
 }
@@ -361,17 +374,25 @@ export function evaluatePathogen(client: GenClient, reportId: string): Promise<s
 }
 
 /**
- * File an appeal against one report's quarantine verdict. Deterministic: it only
- * posts the bond and moves the report's escrow to UNDER_APPEAL, which freezes the
- * payout. The verdict comes from `resolveAppeal`.
+ * File a rebuttal of one report's quarantine verdict. `rebuttedTraceId` must be the
+ * report's own flagged transaction — any other hash reverts with
+ * ERR_APPEAL_NOT_BOUND_TO_REPORT. Deterministic: it only posts the bond and moves the
+ * report's escrow to UNDER_APPEAL, which freezes the payout. The verdict comes from
+ * `resolveAppeal`, which re-judges the flagged transaction under the rebuttal.
  */
 export function fileAppeal(
   client: GenClient,
-  params: { reportId: string; proofTraceId: string; platform: string; bondAtto: bigint },
+  params: {
+    reportId: string;
+    rebuttedTraceId: string;
+    rebuttalKind: string;
+    justification: string;
+    bondAtto: bigint;
+  },
 ): Promise<string> {
   return write(client, {
     functionName: 'file_appeal',
-    args: [params.reportId, params.proofTraceId, params.platform],
+    args: [params.reportId, params.rebuttedTraceId, params.rebuttalKind, params.justification],
     value: params.bondAtto,
   });
 }
@@ -400,6 +421,16 @@ export function withdraw(client: GenClient): Promise<string> {
  */
 export function claimPayout(client: GenClient, reportId: string): Promise<string> {
   return write(client, { functionName: 'claim_payout', args: [reportId] });
+}
+
+/**
+ * Close an incident whose clock has run out. Permissionless and deterministic: refunds
+ * a never-evaluated report's bond, expires a stalled appeal, or — for a standing
+ * verdict past its challenge window — releases the escrow, lifts the lapsed
+ * quarantine and marks the report CLOSED.
+ */
+export function expireIncident(client: GenClient, reportId: string): Promise<string> {
+  return write(client, { functionName: 'expire_incident', args: [reportId] });
 }
 
 // Await a GenLayer transaction receipt. On-chain LLM consensus (report_pathogen's

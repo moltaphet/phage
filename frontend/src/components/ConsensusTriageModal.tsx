@@ -86,6 +86,7 @@ export function ConsensusTriageModal({ isOpen, onClose, reportData, client, onRe
         targetAgent: reportData.targetAgent,
         platform: reportData.platform,
         traceId: reportData.traceId,
+        exploitCategory: reportData.category,
         bondAtto: reportData.bondAtto,
       });
       setReportTx(reportHash);
@@ -155,7 +156,7 @@ export function ConsensusTriageModal({ isOpen, onClose, reportData, client, onRe
         <div className="modal-body">
           <div className="cluster" style={{ justifyContent: 'space-between', gap: 10 }}>
             <span className="hash">{reportData.targetAgent}</span>
-            <span className="help">{reportData.platform} · {reportData.bondGen} GEN bond</span>
+            <span className="help">{reportData.platform} · {reportData.category} · {reportData.bondGen} GEN bond</span>
           </div>
 
           <div className="phase-grid">

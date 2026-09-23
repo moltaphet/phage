@@ -22,8 +22,11 @@
 // "Euler Finance Exploiter 3" / ATTACKER. report_pathogen fetches that transaction
 // from eth.blockscout.com and requires the target to be one of its parties before it
 // takes the bond; a transaction the target is not party to reverts the filing with
-// ERR_UNBOUND_EVIDENCE. Pass `--target`, `--platform` (EVM_TX / EVM_TX_BASE) and
-// `--trace 0x<64 hex>` to cite a different incident.
+// ERR_UNBOUND_EVIDENCE. It then requires the transaction to exhibit the claimed exploit
+// category's mechanics, or reverts with ERR_UNSUPPORTED_EXPLOIT_CATEGORY; the default,
+// FLASH_LOAN_DRAIN, matches Euler's Aave DAI flash loan (borrowed from aDAI and repaid
+// in the same transaction). Pass `--target`, `--platform` (EVM_TX / EVM_TX_BASE),
+// `--trace 0x<64 hex>` and `--category` to cite a different incident.
 import { createClient } from 'genlayer-js';
 import { privateKeyToAccount } from 'viem/accounts';
 import { PHAGE_CONTRACT_ADDRESS, STUDIO_DEV_CHAIN, STUDIONET_RPC } from '../src/lib/contract.ts';
@@ -51,6 +54,7 @@ const REPORT_ID = flag('report-id', 'live-cycle-1');
 const TARGET = flag('target', '0x5F259D0b76665c337c6104145894F4D1D2758B8c');
 const PLATFORM = flag('platform', 'EVM_TX');
 const TRACE_ID = flag('trace', '0xc310a0affe2169d1f6feec1c63dbc7f7c62a887fa48795d327d4d2da2d6b111d');
+const CATEGORY = flag('category', 'FLASH_LOAN_DRAIN');
 const BOND = 100_000_000_000_000_000n; // 0.1 GEN — MIN_REPORTER_BOND
 const J = (_k, v) => (typeof v === 'bigint' ? v.toString() : v instanceof Map ? Object.fromEntries(v) : v);
 
@@ -88,7 +92,7 @@ if (DRY) {
     const out = await client.simulateWriteContract({
       address: PHAGE_CONTRACT_ADDRESS,
       functionName: 'report_pathogen',
-      args: [REPORT_ID, TARGET, PLATFORM, TRACE_ID],
+      args: [REPORT_ID, TARGET, PLATFORM, TRACE_ID, CATEGORY],
       value: BOND,
     });
     return out === null || out === undefined ? 'accepted' : out;
@@ -119,6 +123,7 @@ const reportHash = await step('report_pathogen (binding check + 0.1 GEN bond)', 
     targetAgent: TARGET,
     platform: PLATFORM,
     traceId: TRACE_ID,
+    exploitCategory: CATEGORY,
     bondAtto: BOND,
   }),
 );
@@ -171,8 +176,9 @@ if (escrow.exists) {
   console.log(`   status           ${escrow.status}`);
   console.log(`   held             ${escrow.bond_gen} GEN bond + ${escrow.payout_gen} GEN bounty`);
   console.log(`   locked until     ${escrow.locked_until_iso} (releasable now: ${escrow.is_releasable})`);
-  console.log(`   appeal with      file_appeal("${REPORT_ID}", <tx hash>, "EVM_TX") then resolve_appeal(<id>)`);
-  console.log(`   release with     claim_payout("${REPORT_ID}") once the window closes, no appeal pending\n`);
+  console.log(`   appeal with      file_appeal("${REPORT_ID}", "${TRACE_ID}", <rebuttal kind>, <justification>) then resolve_appeal(<id>)`);
+  console.log(`   release with     claim_payout("${REPORT_ID}") once the window closes, no appeal pending`);
+  console.log(`   or close with    expire_incident("${REPORT_ID}") (releases, lifts the lapsed quarantine, CLOSED)\n`);
 } else {
   console.log(`── no escrow opened for ${REPORT_ID} (the verdict carried no quarantine)\n`);
 }
